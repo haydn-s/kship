@@ -130,7 +130,17 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "make_kaggle", lambda: Kaggle(api=fake, sleep=lambda s: None))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KSHIP_NO_NOTIFY", "1")
-    for var in ("KAGGLE_API_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_CONFIG_DIR"):
+    # GitHub runners set these; tests that want CI behaviour set GITHUB_ACTIONS themselves.
+    for var in (
+        "KAGGLE_API_TOKEN",
+        "KAGGLE_USERNAME",
+        "KAGGLE_KEY",
+        "KAGGLE_CONFIG_DIR",
+        "GITHUB_ACTIONS",
+        "GITHUB_STEP_SUMMARY",
+        "GITHUB_OUTPUT",
+        "KSHIP_SUMMARY_FILE",
+    ):
         monkeypatch.delenv(var, raising=False)
     (tmp_path / "home").mkdir()
     return fake
