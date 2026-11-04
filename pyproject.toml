@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kship"
+version = "0.1.0"
+description = "Validate, gate and ship Kaggle submissions straight from your pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "D. Haydn Stucker" }]
+keywords = ["kaggle", "machine-learning", "cli", "ci", "github-actions", "mlops"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# kaggle 2.2.4-2.2.5 import `six` without declaring it; a clean install crashes without it
+dependencies = ["kaggle>=2.2", "six"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pyyaml", "actionlint-py", "ruff"]
+
+[project.urls]
+# `kship ci` points generated workflows at this repository; publish.sh rewrites it.
+Repository = "https://github.com/haydn-s/kship"
+Issues = "https://github.com/haydn-s/kship/issues"
+
+[project.scripts]
+kship = "kship.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kship"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
