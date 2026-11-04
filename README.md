@@ -2,7 +2,7 @@
 
 [![test](https://github.com/haydn-s/kship/actions/workflows/test.yml/badge.svg)](https://github.com/haydn-s/kship/actions/workflows/test.yml)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)
-![license](https://img.shields.io/badge/license-MIT-green)
+![license](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 Ship Kaggle submissions straight from your pipeline, without burning attempts on mistakes.
 
@@ -185,4 +185,4 @@ them on Python 3.11 to 3.14 (Linux) and 3.14 (macOS).
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
