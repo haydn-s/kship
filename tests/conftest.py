@@ -46,6 +46,8 @@ class FakeApi:
         self.kernel_polls = 0
         self.kernel_pushes = 0
         self.code_submits: list[tuple] = []
+        self.sample_name = "sample_submission.csv"  # class competitions often nest it: for_students/...
+        self.zip_downloads = False  # Kaggle serves large files as <name>.zip
 
     def competitions_list(self, group=None, search=None, category=None, page_size=20, **_):
         if group is not None:
@@ -69,10 +71,19 @@ class FakeApi:
         return NS(num_allowed_now=self.allowed_now, num_today=self.today, num_total=self.total)
 
     def competition_list_files(self, slug, page_size=20, **_):
-        return NS(files=[NS(name="train.csv"), NS(name="sample_submission.csv")])
+        return NS(files=[NS(name="train.csv"), NS(name=self.sample_name)])
 
     def competition_download_file(self, slug, name, path=None, force=False, quiet=False):
-        Path(path, name).write_text(SAMPLE)
+        # Like the real client: keeps the file's folders, and doesn't unzip what it zipped.
+        out = Path(path, name)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if self.zip_downloads:
+            import zipfile
+
+            with zipfile.ZipFile(out.with_name(out.name + ".zip"), "w") as z:
+                z.writestr(out.name, SAMPLE)
+        else:
+            out.write_text(SAMPLE)
 
     def competition_download_files(self, slug, path=None, force=False, quiet=True):
         import zipfile

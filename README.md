@@ -89,7 +89,7 @@ The markers work from any language and any tool: notebooks via `jupyter nbconver
 `kship new` (or `kship ci` in an existing project) adds `.github/workflows/kship.yml`:
 
 - **pull request**: installs, downloads data (cached), runs the pipeline with `--dry-run`, and comments on the PR whether it *would* ship, with this run's CV next to your best
-- **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it
+- **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it. The submission's note is the commit's subject line, or the PR title for "Merge pull request #N" commits
 - serialized per branch, so two quick merges can't race each other for the same "best"
 
 **No shared state needed.** Every submission message is tagged, e.g.
@@ -161,7 +161,7 @@ Heads-up: kaggle 2.2.4 and 2.2.5 import `six` without declaring it, so a clean `
 
 ```sh
 uv venv && uv pip install -e '.[test]'
-.venv/bin/pytest                       # 55 tests, about 2 seconds
+.venv/bin/pytest                       # 64 tests, about 2 seconds
 .venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
 ```
 
