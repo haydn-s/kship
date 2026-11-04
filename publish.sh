@@ -7,8 +7,8 @@
 #   ./publish.sh https://github.com/haydn-s/kship
 #
 # It points kship at that repo (CI workflows install kship from it), makes the
-# first commit, tags v<version>, pushes both, and reinstalls your local kship so
-# `kship ci` picks up the new URL. Run it once.
+# first commit, tags v<version>, pushes both, protects main (protect-main.sh),
+# and reinstalls your local kship so `kship ci` picks up the new URL. Run it once.
 
 set -euo pipefail
 
@@ -60,7 +60,15 @@ git remote add origin "$remote"
 git push -u origin main
 git push origin "v$version"
 
-# 4. Reinstall the local tool so its metadata carries the new repo URL.
+# 4. Protect main: pull requests only, lint and tests must pass.
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  say "protecting main"
+  ./protect-main.sh "$slug" || say "main isn't protected yet (see the error above); run ./protect-main.sh once that's fixed"
+else
+  say "main isn't protected yet: install and sign in to the GitHub CLI (gh), then run ./protect-main.sh"
+fi
+
+# 5. Reinstall the local tool so its metadata carries the new repo URL.
 if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q '^kship '; then
   say "reinstalling kship so \`kship ci\` points new projects at $web"
   uv tool install --force --editable . >/dev/null

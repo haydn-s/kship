@@ -161,13 +161,18 @@ Heads-up: kaggle 2.2.4 and 2.2.5 import `six` without declaring it, so a clean `
 
 ```sh
 uv venv && uv pip install -e '.[test]'
-.venv/bin/pytest                       # 64 tests, about 2 seconds
+.venv/bin/pytest                       # 65 tests, about 2 seconds
 .venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
 ```
 
 The tests run against a fake Kaggle API, plus a check that the real `KaggleApi` still has the
 method signatures kship calls, and an `actionlint` pass over the generated workflow. CI runs
 them on Python 3.11 to 3.14 (Linux) and 3.14 (macOS).
+
+`main` is protected by the ruleset in `.github/rulesets/main.json`: changes land through pull
+requests, the `checks-passed` job (lint plus every test job) has to pass first, and no one can
+force-push or delete `main`, admins included. `./protect-main.sh` applies it to the GitHub repo,
+and re-running it after you edit the JSON updates the live ruleset.
 
 ### Layout
 
@@ -181,7 +186,8 @@ them on Python 3.11 to 3.14 (Linux) and 3.14 (macOS).
 | `src/kship/config.py` | `kship.toml` |
 | `src/kship/scaffold.py` | files `kship new` creates |
 | `bootstrap.sh` | one-time machine setup |
-| `publish.sh` | first push of this repo to a new GitHub repository |
+| `publish.sh` | first push of this repo to a new GitHub repository, then protects `main` |
+| `protect-main.sh` | applies `main`'s ruleset (`.github/rulesets/main.json`) on GitHub |
 
 ## License
 
