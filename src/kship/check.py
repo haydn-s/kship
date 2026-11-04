@@ -24,6 +24,7 @@ class CheckResult:
     rows: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    against_sample: bool = False  # True when the header, row count and IDs were compared to a sample
 
     @property
     def ok(self) -> bool:
@@ -89,11 +90,16 @@ def check_submission(
         return res
 
     s_header, s_ids, s_numeric = (None, [], [])
-    if sample is not None:
-        if sample.is_file():
-            s_header, s_ids, s_numeric = _read_sample(sample)
-        else:
-            res.warnings.append(f"sample submission {sample} not found, so only basic checks ran")
+    if sample is None:
+        res.warnings.append(
+            "no sample submission to compare against (set sample_submission in kship.toml), "
+            "so the header, row count and IDs weren't checked"
+        )
+    elif sample.is_file():
+        s_header, s_ids, s_numeric = _read_sample(sample)
+        res.against_sample = s_header is not None
+    else:
+        res.warnings.append(f"sample submission {sample} not found, so the header, row count and IDs weren't checked")
 
     with _open_text(path) as f:
         reader = csv.reader(f)

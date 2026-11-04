@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `kship init` / `kship new` find the sample submission when the competition keeps its files in a folder (e.g. `for_students/sample_submission.csv`, common in class competitions) or serves it zipped. Before, `sample_submission` was left empty, which quietly switched off the row-count and ID checks
+- `kship check` no longer says a file "matches the sample submission" when there was no sample to compare against; it warns that the header, row count and IDs weren't checked
+- A failed sample download says why (e.g. 403: rules not accepted) instead of always blaming the rules
+- CI: merges note the PR title on Kaggle ("LightGBM + TE (#7)") instead of "Merge pull request #7 from ...". `kship run -m` takes a whole commit message and uses its subject line. Regenerate the workflow with `kship ci --force` to pick this up
+- `kship run` output stays in order when piped (CI logs showed the pipeline's output above kship's own header)
+
 ## 0.1.0 (2026-11-04)
 
 First release.

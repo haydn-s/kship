@@ -70,3 +70,14 @@ def test_gzip_and_bom(tmp_path):
 def test_without_sample_still_catches_basics(tmp_path):
     res = check_submission(make(tmp_path, "s.csv", "id,y\n1,0.2\n2,inf\n"), None)
     assert not res.ok
+
+
+def test_without_sample_says_what_was_not_checked(tmp_path):
+    res = check_submission(make(tmp_path, "s.csv", "id,y\n1,0.2\n"), None)
+    assert res.ok and not res.against_sample and "IDs weren't checked" in res.warnings[0]
+    missing = check_submission(make(tmp_path, "t.csv", "id,y\n1,0.2\n"), tmp_path / "nope.csv")
+    assert not missing.against_sample and "IDs weren't checked" in missing.warnings[0]
+
+
+def test_with_sample_is_marked_as_compared(tmp_path):
+    assert run(tmp_path, "id,target\n1,0.1\n2,0.9\n3,0.5\n").against_sample

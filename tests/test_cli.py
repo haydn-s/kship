@@ -23,6 +23,38 @@ def test_init_downloads_sample_and_infers_direction(project):
     assert (project / "data/sample_submission.csv").exists()
 
 
+def test_init_finds_a_sample_in_a_subfolder(api, tmp_path, monkeypatch):
+    api.sample_name = "for_students/sample_submission.csv"
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["init", SLUG]) == 0
+    assert tomllib.loads((tmp_path / "kship.toml").read_text())["sample_submission"] == "data/sample_submission.csv"
+    assert (tmp_path / "data/sample_submission.csv").read_text().startswith("id,target")
+    assert not (tmp_path / "data/for_students").exists()
+
+
+def test_init_unzips_a_large_sample(api, tmp_path, monkeypatch):
+    api.sample_name, api.zip_downloads = "for_students/sample_submission.csv", True
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["init", SLUG]) == 0
+    assert (tmp_path / "data/sample_submission.csv").exists()
+    assert not list((tmp_path / "data").rglob("*.zip")) and not (tmp_path / "data/for_students").exists()
+
+
+def test_init_sample_failure_says_why(api, tmp_path, monkeypatch, capsys):
+    class Forbidden(Exception):
+        response = type("R", (), {"status_code": 403})()
+
+    def refuse(*a, **kw):
+        raise Forbidden("403 Client Error")
+
+    api.competition_download_file = refuse
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["init", SLUG]) == 0
+    out = capsys.readouterr().out
+    assert "accepted this competition's rules" in out and "set sample_submission in kship.toml" in out
+    assert tomllib.loads((tmp_path / "kship.toml").read_text())["sample_submission"] == ""
+
+
 def test_init_lower_is_better_metric(api, tmp_path, monkeypatch):
     api.metric = "Root Mean Squared Error (RMSE)"
     monkeypatch.chdir(tmp_path)
@@ -128,6 +160,16 @@ def test_still_pending_after_timeout(project, api):
     assert entries(project)[0]["status"] == "pending"
 
 
+def test_check_without_sample_does_not_claim_a_match(project, capsys):
+    toml = project / "kship.toml"
+    text = toml.read_text().replace('sample_submission = "data/sample_submission.csv"', 'sample_submission = ""')
+    toml.write_text(text)
+    write_sub(project, "a.csv", values=(0.1,), ids=(1,))
+    assert cli.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "matches the sample" not in out and "passes the basic checks" in out and "IDs weren't checked" in out
+
+
 def test_dry_run_uploads_nothing(project, api):
     write_sub(project, "a.csv")
     assert cli.main(["submit", "--dry-run"]) == 0 and api.uploads == []
@@ -172,6 +214,18 @@ def test_run_keeps_a_reserve_slot(project, api, capsys):
 def test_run_without_new_file_errors(project, api, capsys):
     assert cli.main(["run", "--", sys.executable, "-c", "print('hi')"]) == 1
     assert "wrote no new file" in capsys.readouterr().out
+
+
+def test_run_output_stays_in_order_when_piped(tmp_path):
+    # In-process tests can't see this: it needs a real, block-buffered stdout pipe, as in CI logs.
+    import os
+    import subprocess
+
+    (tmp_path / "kship.toml").write_text('competition = "demo"\n')
+    env = {**os.environ, "HOME": str(tmp_path), "KSHIP_NO_NOTIFY": "1", "NO_COLOR": "1"}
+    cmd = [sys.executable, "-m", "kship", "run", "--", sys.executable, "-c", "print('training...')"]
+    out = subprocess.run(cmd, cwd=tmp_path, env=env, capture_output=True, text=True).stdout
+    assert out.index("kship run:") < out.index("training...") < out.index("wrote no new file")
 
 
 def test_run_without_cv_still_ships(project, api, capsys):
@@ -269,6 +323,21 @@ def test_dedupe_uses_fingerprint_from_kaggle(project, api):
     assert cli.main(["submit"]) == 0 and api.uploads == []
 
 
+def test_note_line_from_commit_messages():
+    merge = "Merge pull request #7 from haydn-s/lgbm\n\nLightGBM with target encoding"
+    assert cli.note_line(merge) == "LightGBM with target encoding (#7)"
+    assert cli.note_line("Deeper trees (#8)\n\n* depth 12\n* more rounds") == "Deeper trees (#8)"
+    assert cli.note_line("Merge pull request #9 from a/b") == "Merge pull request #9 from a/b"
+    assert cli.note_line("  baseline  ") == "baseline" and cli.note_line("") == "" and cli.note_line(None) == ""
+
+
+def test_merge_commit_message_becomes_pr_title(project, api):
+    write_sub(project, "a.csv")
+    assert cli.main(["submit", "-m", "Merge pull request #7 from haydn-s/lgbm\n\nLightGBM + TE"]) == 0
+    assert api.uploads[0][1].startswith("LightGBM + TE (#7) · git=")
+    assert entries(project)[0]["note"] == "LightGBM + TE (#7)"
+
+
 def test_note_cannot_spoof_tags(project, api):
     write_sub(project, "a.csv")
     cli.main(["submit", "-m", "trick cv=0.99999"])
@@ -340,7 +409,7 @@ def test_ci_command_writes_workflow(project, api, capsys):
     wf = (project / ".github/workflows/kship.yml").read_text()
     assert "secrets.KAGGLE_API_TOKEN" in wf and "kship run --dry-run" in wf
     assert f"KSHIP_SOURCE: {cli.default_source()}" in wf
-    assert "${{ github.event.head_commit.message }}" in wf and "\"${NOTE%%$'\\n'*}\"" in wf
+    assert "${{ github.event.head_commit.message }}" in wf and 'kship run -m "$NOTE" --' in wf
     assert cli.main(["ci"]) == 1  # refuses to overwrite
     import yaml  # the workflow must be valid YAML
 

@@ -126,6 +126,13 @@ def _to_float(x) -> float | None:
         return None
 
 
+def _prune_empty_dirs(folder: Path, stop: Path) -> None:
+    """Remove folder and its empty parents, up to (not including) stop."""
+    while stop in folder.parents and folder.is_dir() and not any(folder.iterdir()):
+        folder.rmdir()
+        folder = folder.parent
+
+
 class Kaggle:
     def __init__(self, api=None, sleep=time.sleep):
         self._api = api
@@ -201,14 +208,24 @@ class Kaggle:
         return [f.name for f in (getattr(resp, "files", None) or []) if f is not None]
 
     def download_file(self, slug: str, name: str, dest: Path) -> Path:
+        """Download one competition file to dest/<its base name>.
+
+        Kaggle keeps the competition's folder layout (for_students/sample_submission.csv
+        lands in dest/for_students/) and serves large files zipped (<name>.zip). Either
+        way the file ends up directly in dest, where `kship data` unwraps it to as well.
+        """
         dest.mkdir(parents=True, exist_ok=True)
         self.api.competition_download_file(slug, name, path=str(dest), force=True, quiet=True)
-        target = dest / Path(name).name
-        zipped = dest / (Path(name).name + ".zip")
-        if not target.exists() and zipped.exists():
+        nested = dest / name
+        target = dest / nested.name
+        zipped = nested.with_name(nested.name + ".zip")
+        if not nested.exists() and zipped.exists():
             with zipfile.ZipFile(zipped) as z:
-                z.extractall(dest)
+                z.extractall(zipped.parent)
             zipped.unlink()
+        if nested.exists() and nested != target:
+            nested.replace(target)
+            _prune_empty_dirs(nested.parent, stop=dest)
         if not target.exists():
             raise KshipError(f"downloaded {name} but can't find it in {dest}")
         return target
