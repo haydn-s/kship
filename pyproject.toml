@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kship"
-version = "0.1.1"
+dynamic = ["version"]  # from __version__ in src/kship/__init__.py
 description = "Validate, gate and ship Kaggle submissions straight from your pipeline."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,7 +27,7 @@ classifiers = [
 dependencies = ["kaggle>=2.2", "six"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "pyyaml", "actionlint-py", "ruff"]
+test = ["pytest>=8", "pyyaml", "actionlint-py", "ruff", "mypy"]
 
 [project.urls]
 # `kship ci` points generated workflows at this repository (pinned to the release tag).
@@ -36,6 +36,9 @@ Issues = "https://github.com/haydn-s/kship/issues"
 
 [project.scripts]
 kship = "kship.cli:main"
+
+[tool.hatch.version]
+path = "src/kship/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kship"]
@@ -49,3 +52,15 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+# imported lazily, and only inside Kaggle._connect
+module = ["kaggle.*"]
+ignore_missing_imports = true

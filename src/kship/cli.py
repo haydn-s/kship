@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -15,11 +14,10 @@ from importlib import metadata
 from pathlib import Path
 
 from kship import KshipError, __version__, ledger
-from kship.check import CheckResult, check_submission, sha256
+from kship.check import check_submission
 from kship.ci import EXIT_FAILED, Outcome, emit, in_actions, write_workflow
 from kship.config import (
     CONFIG_NAME,
-    LEDGER_NAME,
     MARKDOWN_NAME,
     Config,
     find_config,
@@ -27,8 +25,11 @@ from kship.config import (
     load,
     render,
 )
-from kship.kapi import AUTH_HELP, Kaggle, credential_sources, explain
+from kship.kapi import AUTH_HELP, CompetitionInfo, Kaggle, credential_sources, explain
+from kship.runner import newest_csv, run_streaming
 from kship.scaffold import write_kernel, write_project
+from kship.ship import place_sample, ship
+from kship.ui import bad, good, headline, note, rel, report, say, warn
 
 FALLBACK_REPO = "https://github.com/haydn-s/kship"
 
@@ -91,63 +92,7 @@ def check_source(source: str) -> None:
 # Tests swap these for fakes.
 make_kaggle = Kaggle
 
-# -- output -------------------------------------------------------------------
-
-_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-
-
-def _c(code: str, s: str) -> str:
-    return f"\033[{code}m{s}\033[0m" if _COLOR else s
-
-
-def good(msg: str) -> None:
-    print(f"{_c('32', '✓')} {msg}")
-
-
-def bad(msg: str) -> None:
-    print(f"{_c('31', '✗')} {msg}")
-
-
-def warn(msg: str) -> None:
-    print(f"{_c('33', '!')} {msg}")
-
-
-def note(msg: str) -> None:
-    print(f"{_c('2', '·')} {msg}")
-
-
-def headline(msg: str) -> None:
-    print(_c("1", msg))
-
-
-def notify(title: str, text: str) -> None:
-    """A macOS notification, so a long `kship run` can tell you its score while you're elsewhere."""
-    if sys.platform != "darwin" or os.environ.get("KSHIP_NO_NOTIFY") or not shutil.which("osascript"):
-        return
-    script = f"display notification {json.dumps(text)} with title {json.dumps(title)}"
-    subprocess.run(["osascript", "-e", script], capture_output=True)
-
-
-def report(res: CheckResult) -> None:
-    for e in res.errors:
-        bad(e)
-    for w in res.warnings:
-        warn(w)
-    if res.ok:
-        detail = "matches the sample submission" if res.against_sample else "passes the basic checks"
-        good(f"{res.path.name}: {res.rows} rows, {detail}")
-
-
 # -- helpers ------------------------------------------------------------------
-
-
-def newest_csv(folder: Path, since: float | None = None) -> Path | None:
-    if not folder.is_dir():
-        return None
-    files = [p for p in folder.iterdir() if p.is_file() and p.name.endswith((".csv", ".csv.gz", ".zip"))]
-    if since is not None:
-        files = [p for p in files if p.stat().st_mtime >= since]
-    return max(files, key=lambda p: p.stat().st_mtime, default=None)
 
 
 def resolve_file(arg: str | None, cfg: Config) -> Path:
@@ -157,71 +102,6 @@ def resolve_file(arg: str | None, cfg: Config) -> Path:
     if found is None:
         raise KshipError(f"no file given and nothing in {cfg.submission_dir}/ to pick up")
     return found
-
-
-def place_sample(cfg: Config) -> Path | None:
-    """kship.toml's sample submission, copied into place if `kship data` unpacked it elsewhere.
-
-    `kship init` saves the sample as data/<its name>. `kship data` keeps the archive's own
-    folders (data/for_students/sample_submission.csv), so on a fresh CI runner the
-    configured path can be missing even though the file was downloaded.
-    """
-    sample = cfg.sample_path
-    if sample is None or sample.is_file():
-        return sample
-    data = cfg.root / "data"
-    found = [p for p in data.rglob(sample.name) if p.is_file()] if data.is_dir() else []
-    if len(found) == 1:
-        sample.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(found[0], sample)
-        note(f"copied {rel(found[0], cfg.root)} to {rel(sample, cfg.root)}, where kship.toml expects the sample")
-    return sample
-
-
-def dir_digest(folder: Path) -> str:
-    h = hashlib.sha256()
-    for p in sorted(folder.rglob("*")):
-        if p.is_file():
-            h.update(str(p.relative_to(folder)).encode())
-            h.update(p.read_bytes())
-    return h.hexdigest()
-
-
-_MERGE_LINE = re.compile(r"Merge pull request (#\d+) from \S+")
-
-
-def note_line(text: str | None) -> str:
-    """One line of note from free text or a whole commit message: its first non-empty line,
-    except that GitHub's "Merge pull request #7 from you/branch" commits give the PR title
-    (the line after it) as "<title> (#7)"."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    m = _MERGE_LINE.fullmatch(lines[0])
-    if m and len(lines) > 1:
-        return f"{lines[1]} ({m.group(1)})"
-    return lines[0]
-
-
-def build_message(
-    note_text: str, cv: float | None, git: dict | None, digest: str, fallback: str, cv_scheme: str = ""
-) -> str:
-    """The Kaggle submission description. The tags are machine-readable on purpose:
-    kship reads them back to gate and dedupe from any machine, CI included."""
-    tags = [f"cv={cv:.5f}"] if cv is not None else []
-    if cv is not None and cv_scheme:
-        tags.append(f"cvs={cv_scheme}")
-    tags += [f"git={ledger.git_label(git)}", f"sub={digest[:8]}"]
-    tail = " · " + " · ".join(tags)
-    head = " ".join((note_line(note_text) or fallback).split()).replace("=", ":")
-    return head[: 250 - len(tail)] + tail
-
-
-def rel(path: Path, root: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(root.resolve()))
-    except ValueError:
-        return str(path)
 
 
 # -- doctor -------------------------------------------------------------------
@@ -327,7 +207,9 @@ def _pick_sample(names: list[str]) -> str | None:
     return None
 
 
-def init_project(root: Path, slug: str, force: bool = False) -> Config:
+def init_project(root: Path, slug: str, force: bool = False) -> tuple[Config, CompetitionInfo | None]:
+    """Write kship.toml (and fetch the sample). Returns the config, and the competition's
+    details when Kaggle's search could find it."""
     cfg_path = root / CONFIG_NAME
     if cfg_path.exists() and not force:
         raise KshipError(f"{cfg_path} already exists (use --force to overwrite)")
@@ -377,7 +259,7 @@ def init_project(root: Path, slug: str, force: bool = False) -> Config:
         good(f"code competition: scaffolded {cfg.kernel_dir}/ (kernel-metadata.json + submission.py)")
     if info and info.joined is False:
         warn(f"you haven't joined yet. Accept the rules before submitting: {info.url}/rules")
-    return load(root)
+    return load(root), info
 
 
 def cmd_init(args) -> int:
@@ -393,12 +275,8 @@ def cmd_new(args) -> int:
     headline(f"new competition project: {dest}")
     if shutil.which("git") and not (dest / ".git").exists():
         subprocess.run(["git", "init", "-q"], cwd=dest, check=False)
-    cfg = init_project(dest, args.competition, force=args.force)
-    info_title = ""
-    first = (dest / CONFIG_NAME).read_text().splitlines()[0]
-    if first.startswith("# "):
-        info_title = first[2:]
-    for p in write_project(dest, args.competition, info_title, cfg.sample_submission):
+    cfg, info = init_project(dest, args.competition, force=args.force)
+    for p in write_project(dest, args.competition, info.title if info else "", cfg.sample_submission):
         note(f"created {rel(p, dest)}")
     source = args.source or default_source()
     wf = write_workflow(dest, source)
@@ -451,7 +329,8 @@ def cmd_data(args) -> int:
     headline(f"downloading {cfg.competition} into {rel(dest, Path.cwd())}/")
     for p in k.download_all(cfg.competition, dest):
         note(f"{rel(p, cfg.root)}  ({p.stat().st_size / 1e6:.1f} MB)")
-    sample = place_sample(cfg)
+    sample, placed = place_sample(cfg)
+    say(placed)
     if sample is not None and not sample.is_file():
         warn(f"sample_submission in {CONFIG_NAME} ({cfg.sample_submission}) isn't among the downloaded files")
     return 0
@@ -464,250 +343,28 @@ def cmd_check(args) -> int:
     cfg = load()
     if cfg.mode == "notebook" and not args.file:
         raise KshipError("this is a code competition; pass a local CSV to check, e.g. kship check out.csv")
-    res = check_submission(resolve_file(args.file, cfg), place_sample(cfg), cfg.value_range)
+    sample, placed = place_sample(cfg)
+    say(placed)
+    res = check_submission(resolve_file(args.file, cfg), sample, cfg.value_range)
     report(res)
     return 0 if res.ok else 1
 
 
-def ship(
-    cfg: Config,
-    path: Path,
-    *,
-    note_text: str = "",
-    cv: float | None = None,
-    gate: str = "always",
-    automated: bool = False,
-    force: bool = False,
-    dry_run: bool = False,
-    wait: bool = True,
-    command: str = "",
-) -> int:
-    """Validate, dedupe, gate, check quota, upload, wait for the score. Returns an exit code."""
-    slug = cfg.competition
-    higher = cfg.higher_is_better
-    out = Outcome(decision="failed", reason="", competition=slug, cv=cv, file=rel(path, cfg.root))
-    say = {
-        "shipped": lambda m: good(m),
-        "would-ship": lambda m: good(f"dry run, nothing uploaded: would ship. {m}"),
-        "skipped": lambda m: note(f"not shipped: {m}"),
-        "blocked": lambda m: warn(f"not shipped: {m}"),
-        "failed": lambda m: bad(m),
-    }
-
-    def finish(decision: str, reason: str) -> int:
-        out.decision, out.reason = decision, reason
-        say[decision](reason)
-        emit(out)
-        return out.code
-
-    # 1. Validate what's about to be uploaded.
-    if cfg.mode == "notebook":
-        if not (path / "kernel-metadata.json").is_file():
-            return finish("failed", f"{rel(path, cfg.root)}/kernel-metadata.json is missing")
-        digest = dir_digest(path)
-        good(f"kernel {rel(path, cfg.root)}/ ready to push")
-        ready = f"{rel(path, cfg.root)}/ is ready to push"
-    else:
-        sample = place_sample(cfg)
-        if sample is not None and not sample.is_file():
-            return finish(
-                "failed",
-                f"the sample submission ({rel(sample, cfg.root)}) is missing, so the IDs can't be checked. "
-                f"Run `kship data`, or fix sample_submission in {CONFIG_NAME}",
-            )
-        res = check_submission(path, sample, cfg.value_range)
-        report(res)
-        if not res.ok:
-            return finish("failed", "fix the file first; uploading it would have cost a submission")
-        digest = sha256(path)
-        checked = "passes every check" if res.against_sample else "passes the basic checks (no sample to compare)"
-        ready = f"{rel(path, cfg.root)} {checked}"
-
-    # 2. History = this machine's ledger + everything Kaggle has on record. Reading Kaggle
-    #    means a fresh CI runner (or another laptop) gates against the same best score.
-    k = None
-    remote: list[dict] = []
-    try:
-        k = make_kaggle()
-        remote = [ledger.from_kaggle(s) for s in k.all_submissions(slug)]
-    except Exception as e:  # no credentials, 403 before the rules are accepted, network
-        msg = str(e).splitlines()[0] if isinstance(e, KshipError) else explain(e)
-        if not dry_run:
-            return finish(
-                "failed",
-                f"can't read your submissions from Kaggle: {msg} "
-                f"(rules: https://www.kaggle.com/competitions/{slug}/rules)",
-            )
-        warn(f"can't reach Kaggle ({msg}); judging against the local ledger only")
-        k = None
-    history = ledger.merge(ledger.load(cfg.ledger_path), remote)
-
-    direction = higher if higher is not None else True
-    # CVs only compare within one cv_scheme; public scores always compare.
-    comparable = ledger.same_scheme(history, cfg.cv_scheme)
-    prev_cv = ledger.best(comparable, "cv", higher) if higher is not None else None
-    prev_pub = ledger.best(history, "public", direction)
-    out.best_cv = prev_cv[0] if prev_cv else None
-    out.best_public = prev_pub[0] if prev_pub else None
-
-    # 3. Never pay twice for the same predictions.
-    dup = ledger.find_duplicate(history, digest)
-    if dup and not force:
-        score = ledger.as_float(dup.get("public"))
-        return finish(
-            "skipped",
-            f"identical to {ledger.label(dup)}"
-            + (f" (public {score:.5f})" if score is not None else "")
-            + ". Use --force to send it again.",
-        )
-
-    # 4. CV gate. Without a CV there's nothing to beat, and a pipeline that stopped
-    #    printing one (say it moved to `logging`, which writes to stderr) would otherwise
-    #    spend a submission on every merge.
-    verdict = ""
-    scheme = f" (cv_scheme {cfg.cv_scheme!r})" if cfg.cv_scheme else ""
-    if gate == "better":
-        if cv is None:
-            return finish(
-                "skipped",
-                "no CV score to gate on. Print KSHIP_CV=<score> to stdout or pass --cv, "
-                "or use --gate always to ship without one.",
-            )
-        if higher is None:
-            return finish(
-                "failed",
-                "set higher_is_better in kship.toml so the CV gate knows which way is up (or pass --gate always)",
-            )
-        if prev_cv and not ledger.improves(cv, prev_cv[0], higher, cfg.min_improvement):
-            return finish(
-                "skipped",
-                f"cv {cv:.5f} doesn't beat your best {prev_cv[0]:.5f}{scheme} "
-                f"({ledger.label(prev_cv[1])}). Use --gate always to ship anyway.",
-            )
-        if prev_cv:
-            verdict = f"cv {cv:.5f} beats your best {prev_cv[0]:.5f}{scheme} ({ledger.label(prev_cv[1])})"
-            good(verdict)
-        else:
-            verdict = f"cv {cv:.5f} is the first CV on record{scheme}"
-
-    git = ledger.git_info(cfg.root, ignore=(LEDGER_NAME, MARKDOWN_NAME))
-    fallback = path.name if cfg.mode == "file" else "kernel"
-    message = build_message(note_text, cv, git, digest, fallback, cfg.cv_scheme)
-    out.message = message
-    if git and git.get("dirty"):
-        warn("uncommitted changes: this submission won't be reproducible from its commit alone")
-
-    # 5. Respect the daily quota, keeping a reserve when automation is driving.
-    lim = k.limits(slug) if k else None
-    if lim is not None:
-        out.left_today = lim.allowed_now
-    if dry_run:
-        return finish("would-ship", verdict or ready)
-    if lim is not None:
-        floor = cfg.reserve if automated else 0
-        if lim.allowed_now == 0 and lim.total == 0:
-            return finish(
-                "failed",
-                f"Kaggle shows no submissions available for {slug}. If you haven't "
-                f"joined, accept the rules: https://www.kaggle.com/competitions/{slug}/rules",
-            )
-        if lim.allowed_now == 0:
-            return finish("blocked", f"daily limit reached ({lim.today} used today); it resets at 00:00 UTC")
-        if lim.allowed_now <= floor:
-            return finish(
-                "blocked",
-                f"{lim.allowed_now} submission(s) left today and reserve = {floor}, so "
-                "automation won't spend them. Ship it with `kship submit`, or re-run "
-                "after 00:00 UTC.",
-            )
-
-    # 6. Upload.
-    kernel_version = None
-    try:
-        if cfg.mode == "notebook":
-            kernel_id, kernel_version = k.push_kernel(path)
-            good(f"pushed {kernel_id} version {kernel_version}; waiting for it to run on Kaggle")
-            k.wait_kernel(
-                kernel_id,
-                cfg.kernel_timeout_minutes * 60,
-                on_tick=lambda s, t: note(f"kernel {s.lower()} ({t / 60:.0f} min)"),
-            )
-            ref = k.submit_kernel(slug, kernel_id, kernel_version, cfg.kernel_output, message)
-        else:
-            ref = k.submit_file(slug, path, message)
-    except Exception as e:
-        return finish("failed", f"upload failed: {e if isinstance(e, KshipError) else explain(e)}")
-    good(f"submitted to {slug}: {message}")
-
-    rec = ledger.append(
-        cfg.ledger_path,
-        {
-            "time": ledger.now(),
-            "file": rel(path, cfg.root),
-            "sha256": digest,
-            "sub": digest[:8],
-            "git": git,
-            "cv": cv,
-            "cv_scheme": cfg.cv_scheme or None,
-            "note": note_line(note_text),
-            "message": message,
-            "ref": ref,
-            "mode": cfg.mode,
-            "kernel_version": kernel_version,
-            "command": command or None,
-            "automated": automated,
-            "ci": bool(os.environ.get("GITHUB_ACTIONS")),
-            "status": "pending",
-            "public": None,
-            "private": None,
-        },
-    )
-    if lim is not None:
-        out.left_today = max(lim.allowed_now - 1, 0)
-
-    if not wait:
-        return finish("shipped", "submitted; not waiting for the score (`kship log --refresh` picks it up)")
-
-    # 7. Wait for the leaderboard and record what came back.
-    note(f"waiting up to {cfg.poll_minutes:g} min for the score...")
-    try:
-        sub = k.wait_for_score(slug, ref, message, cfg.poll_minutes * 60)
-    except Exception as e:
-        warn(f"lost track of the score ({e})")
-        sub = None
-    records = ledger.load(cfg.ledger_path)
-    # Not by "n": a union-merged ledger can hold two records with the same number.
-    current = next(r for r in records if (r.get("time"), r.get("sha256")) == (rec["time"], rec["sha256"]))
-    if sub is not None:
-        current["ref"] = current.get("ref") or sub.ref
-        current["status"] = ledger.KAGGLE_STATUS.get(sub.status, "pending")
-        current["public"], current["private"] = sub.public, sub.private
-        if sub.error:
-            current["error"] = sub.error
-    ledger.save(cfg.ledger_path, records)
-
-    if current["status"] == "error":
-        notify("kship: submission failed", current.get("error") or slug)
-        return finish("failed", f"Kaggle couldn't score it: {current.get('error') or 'no details'}")
-    if current["public"] is None:
-        return finish("shipped", "submitted; still scoring, run `kship log --refresh` in a bit")
-
-    public = out.public = current["public"]
-    line = f"public score {public:.5f}"
-    if prev_pub:
-        delta = public - prev_pub[0]
-        line += f" ({'+' if delta >= 0 else ''}{delta:.5f} vs your best {prev_pub[0]:.5f}"
-        line += ", new best!)" if ledger.improves(public, prev_pub[0], direction) else ")"
-    notify(f"kship: {slug}", line)
-    return finish("shipped", line)
-
-
 def cmd_submit(args) -> int:
     cfg = load()
-    path = cfg.root / cfg.kernel_dir if cfg.mode == "notebook" else resolve_file(args.file, cfg)
+    if cfg.mode == "notebook":
+        if args.file:
+            raise KshipError(
+                f"this is a code competition: `kship submit` pushes {cfg.kernel_dir}/ and submits its output, "
+                f"so it doesn't take a file (check one with `kship check {args.file}`)"
+            )
+        path = cfg.root / cfg.kernel_dir
+    else:
+        path = resolve_file(args.file, cfg)
     return ship(
         cfg,
         path,
+        connect=make_kaggle,
         note_text=args.message or "",
         cv=args.cv,
         gate=args.gate,
@@ -716,45 +373,6 @@ def cmd_submit(args) -> int:
         dry_run=args.dry_run,
         wait=not args.no_wait,
     )
-
-
-_MARKER = re.compile(rb"^\s*KSHIP_(CV|FILE|MSG)=(.*?)\s*$")
-
-
-def run_streaming(cmd: list[str], env: dict) -> tuple[int, dict]:
-    """Run cmd, mirroring its stdout live, and collect KSHIP_* marker lines it prints."""
-    markers: dict[str, str] = {}
-
-    def scan(line: bytes) -> None:
-        m = _MARKER.match(line)
-        if m:
-            markers[m.group(1).decode().lower()] = m.group(2).decode(errors="replace")
-
-    # Piped (CI logs), stdout is block-buffered; flush so our lines come before the pipeline's.
-    sys.stdout.flush()
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, env=env)
-    except FileNotFoundError:
-        raise KshipError(f"command not found: {cmd[0]}") from None
-    out = getattr(sys.stdout, "buffer", None)
-    tail = b""
-    fd = proc.stdout.fileno()
-    while True:
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        if out is not None:
-            out.write(chunk)
-        else:
-            sys.stdout.write(chunk.decode(errors="replace"))
-        sys.stdout.flush()
-        *lines, tail = re.split(rb"[\r\n]", tail + chunk)
-        for line in lines:
-            scan(line)
-        if len(tail) > 1 << 20:
-            tail = tail[-4096:]
-    scan(tail)
-    return proc.wait(), markers
 
 
 def cmd_run(args) -> int:
@@ -791,17 +409,19 @@ def cmd_run(args) -> int:
         path = Path(markers["file"]).expanduser()
         path = path if path.is_absolute() else (Path.cwd() / path)
     else:
-        path = newest_csv(cfg.submissions_path, since=started)
-        if path is None:
+        newest = newest_csv(cfg.submissions_path, since=started)
+        if newest is None:
             return fail(
                 f"the pipeline finished but wrote no new file to {cfg.submission_dir}/ "
                 "(write it there, or print KSHIP_FILE=<path>)"
             )
+        path = newest
     print()
     headline("shipping")
     return ship(
         cfg,
         path.resolve(),
+        connect=make_kaggle,
         note_text=args.message or markers.get("msg", ""),
         cv=cv,
         gate=args.gate,

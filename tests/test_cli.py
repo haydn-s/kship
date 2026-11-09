@@ -7,6 +7,7 @@ from pathlib import Path
 from conftest import SLUG, write_sub
 
 from kship import cli, ledger
+from kship.ship import note_line
 
 
 def entries(root):
@@ -389,6 +390,21 @@ def test_code_competition_pushes_kernel_then_submits(api, tmp_path, monkeypatch)
     assert entries(tmp_path)[0]["kernel_version"] == 7
 
 
+def test_code_competition_submit_refuses_a_file(api, tmp_path, monkeypatch, capsys):
+    # It used to ignore the file silently and push kernel/ instead.
+    api.code_only = True
+    monkeypatch.chdir(tmp_path)
+    cli.main(["init", SLUG])
+    assert cli.main(["submit", "preds.csv"]) == 1
+    assert "doesn't take a file" in capsys.readouterr().out and api.kernel_pushes == 0
+
+
+def test_new_uses_the_competition_title(api, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["new", SLUG]) == 0
+    assert (tmp_path / SLUG / "README.md").read_text().startswith("# Demo Competition\n")
+
+
 # -- log ----------------------------------------------------------------------
 
 
@@ -467,10 +483,10 @@ def test_dedupe_uses_fingerprint_from_kaggle(project, api):
 
 def test_note_line_from_commit_messages():
     merge = "Merge pull request #7 from haydn-s/lgbm\n\nLightGBM with target encoding"
-    assert cli.note_line(merge) == "LightGBM with target encoding (#7)"
-    assert cli.note_line("Deeper trees (#8)\n\n* depth 12\n* more rounds") == "Deeper trees (#8)"
-    assert cli.note_line("Merge pull request #9 from a/b") == "Merge pull request #9 from a/b"
-    assert cli.note_line("  baseline  ") == "baseline" and cli.note_line("") == "" and cli.note_line(None) == ""
+    assert note_line(merge) == "LightGBM with target encoding (#7)"
+    assert note_line("Deeper trees (#8)\n\n* depth 12\n* more rounds") == "Deeper trees (#8)"
+    assert note_line("Merge pull request #9 from a/b") == "Merge pull request #9 from a/b"
+    assert note_line("  baseline  ") == "baseline" and note_line("") == "" and note_line(None) == ""
 
 
 def test_merge_commit_message_becomes_pr_title(project, api):

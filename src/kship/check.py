@@ -177,7 +177,7 @@ def check_submission(
         res.errors.append(f"{len(dupes)} duplicate IDs: {_examples(dupes)}")
     if bad_value:
         res.errors.append(f"{len(bad_value)} empty or non-numeric values: {_examples(bad_value)}")
-    if out_of_range:
+    if out_of_range and value_range:
         lo, hi = value_range
         res.errors.append(f"{len(out_of_range)} values outside [{lo:g}, {hi:g}]: {_examples(out_of_range)}")
 
