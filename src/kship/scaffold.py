@@ -18,6 +18,11 @@ __pycache__/
 .DS_Store
 """
 
+GITATTRIBUTES = """\
+# Two machines (or a laptop and CI) can both add to the ledger; keep both sides' lines on merge.
+submissions.jsonl merge=union
+"""
+
 MAKEFILE = """\
 # `make ship` runs the pipeline and, if it succeeds, validates the new submission,
 # checks your CV beat your best, and uploads it to Kaggle. MSG adds a note.
@@ -64,6 +69,8 @@ PIPELINE = '''\
     KSHIP_FILE=<path to the CSV it wrote>
     KSHIP_CV=<your cross-validated score>
 kship ships the file only if the run exits cleanly and the CV beats your best.
+With no KSHIP_CV line there's nothing to compare, so `make ship` won't ship it;
+`make force-ship` will (handy for a first baseline).
 """
 
 from datetime import datetime
@@ -170,6 +177,7 @@ def write_kernel(dest: Path, username: str, slug: str, output: str) -> None:
 def write_project(dest: Path, slug: str, title: str, sample: str) -> list[Path]:
     files = {
         ".gitignore": GITIGNORE,
+        ".gitattributes": GITATTRIBUTES,
         "Makefile": MAKEFILE,
         "requirements.txt": REQUIREMENTS,
         "README.md": README.format(title=title or slug, slug=slug),

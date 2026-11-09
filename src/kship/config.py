@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,8 @@ from kship import KshipError
 
 CONFIG_NAME = "kship.toml"
 LEDGER_NAME = "submissions.jsonl"
+MARKDOWN_NAME = "SUBMISSIONS.md"
+_SCHEME = re.compile(r"[A-Za-z0-9._-]*")
 
 # Metric names whose score improves as it goes *down*. Anything else is assumed
 # to improve upward, which covers AUC, accuracy, F1, MAP@k, Dice, kappa, etc.
@@ -57,6 +60,7 @@ class Config:
     metric: str = ""
     higher_is_better: bool | None = None
     min_improvement: float = 0.0
+    cv_scheme: str = ""  # bumped when CV is computed differently; the gate only compares within a scheme
     reserve: int = 1  # daily slots that automated runs (`kship run`) leave for you
     poll_minutes: float = 10.0
     value_range: tuple[float, float] | None = None
@@ -106,6 +110,9 @@ def load(start: Path | None = None) -> Config:
     mode = data.get("mode", "file")
     if mode not in ("file", "notebook"):
         raise KshipError(f'{path}: mode must be "file" or "notebook", got {mode!r}')
+    scheme = str(data.get("cv_scheme", ""))
+    if not _SCHEME.fullmatch(scheme):
+        raise KshipError(f"{path}: cv_scheme can only use letters, digits, '.', '_' and '-' (it's tagged on Kaggle)")
 
     return Config(
         competition=data["competition"],
@@ -116,6 +123,7 @@ def load(start: Path | None = None) -> Config:
         metric=data.get("metric", ""),
         higher_is_better=data.get("higher_is_better"),
         min_improvement=float(data.get("min_improvement", 0.0)),
+        cv_scheme=scheme,
         reserve=int(data.get("reserve", 1)),
         poll_minutes=float(data.get("poll_minutes", 10)),
         value_range=(float(rng[0]), float(rng[1])) if rng else None,
@@ -159,6 +167,8 @@ sample_submission = {_toml_str(cfg.sample_submission)}
 metric = {_toml_str(cfg.metric)}
 {hib_line}
 min_improvement = {cfg.min_improvement:g}     # CV must beat your best by more than this to ship
+cv_scheme = {_toml_str(cfg.cv_scheme)}            # change it (e.g. "v2") when you change how CV is computed:
+                              # the gate then only compares against CVs from the same scheme
 
 reserve = {cfg.reserve}               # daily slots automated runs leave untouched for you
 poll_minutes = {cfg.poll_minutes:g}         # how long to wait for the leaderboard score

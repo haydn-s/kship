@@ -78,6 +78,7 @@ def test_new_scaffolds_a_project(api, tmp_path, monkeypatch):
     root = tmp_path / SLUG
     for f in ("kship.toml", "Makefile", "src/pipeline.py", ".gitignore", "README.md", "requirements.txt"):
         assert (root / f).exists(), f
+    assert "submissions.jsonl merge=union" in (root / ".gitattributes").read_text()
     assert "\tkship run" in (root / "Makefile").read_text()
     assert "data/sample_submission.csv" in (root / "src/pipeline.py").read_text()
     compile((root / "src/pipeline.py").read_text(), "pipeline.py", "exec")
@@ -175,6 +176,144 @@ def test_dry_run_uploads_nothing(project, api):
     assert cli.main(["submit", "--dry-run"]) == 0 and api.uploads == []
 
 
+# -- the sample submission has to be there ------------------------------------
+
+
+def test_missing_sample_fails_instead_of_passing(project, api, capsys):
+    (project / "data/sample_submission.csv").unlink()
+    write_sub(project, "bad.csv", values=(0.5, 0.5), ids=(1, 99))  # wrong IDs and row count
+    assert cli.main(["submit", "--dry-run"]) == 1
+    out = capsys.readouterr().out
+    assert "sample submission (data/sample_submission.csv) is missing" in out and "would ship" not in out
+    assert cli.main(["check"]) == 1
+
+
+def test_data_puts_a_nested_sample_where_kship_toml_expects_it(project, api):
+    # init saved data/sample_submission.csv; this archive keeps it in for_students/.
+    (project / "data/sample_submission.csv").unlink()
+    api.nested_data = True
+    assert cli.main(["data"]) == 0
+    assert (project / "data/for_students/sample_submission.csv").exists()
+    assert (project / "data/sample_submission.csv").exists()
+
+
+def test_ship_finds_a_nested_sample_from_an_older_data_cache(project, api):
+    # A CI data cache made before `kship data` placed the sample: ship copies it into place.
+    sample = project / "data/sample_submission.csv"
+    nested = project / "data/for_students/sample_submission.csv"
+    nested.parent.mkdir()
+    sample.replace(nested)
+    write_sub(project, "a.csv")
+    assert cli.main(["submit", "--dry-run"]) == 0 and sample.exists()
+
+
+# -- the git commit a submission came from ------------------------------------
+
+
+def git(root, *args):
+    import subprocess
+
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", *ident, *args], cwd=root, check=True, capture_output=True)
+
+
+def test_the_ledger_itself_does_not_make_the_tree_dirty(project, api, capsys):
+    (project / ".gitignore").write_text("data/\nsubmissions/*.csv\n")
+    git(project, "init", "-q")
+    write_sub(project, "a.csv")
+    assert cli.main(["submit", "-m", "first", "--no-wait"]) == 0
+    assert cli.main(["log", "--md"]) == 0
+    git(project, "add", "-A")
+    git(project, "commit", "-qm", "code and ledger")
+
+    def submit(name, values):
+        write_sub(project, name, values=values)
+        capsys.readouterr()
+        assert cli.main(["submit", "-m", name, "--no-wait"]) == 0
+        return "uncommitted changes" in capsys.readouterr().out, api.uploads[-1][1].split("git=")[1].split(" ")[0]
+
+    submit("b.csv", (0.2, 0.2, 0.3, 0.4))  # appends to the ledger after reading git
+    assert cli.main(["log", "--md"]) == 0  # rewrites SUBMISSIONS.md
+    dirty, sha = submit("c.csv", (0.3, 0.2, 0.3, 0.4))  # the ledger changed, the code didn't
+    assert not dirty and not sha.endswith("*")
+
+    (project / "kship.toml").write_text((project / "kship.toml").read_text() + "\n# edited\n")
+    dirty, sha = submit("d.csv", (0.4, 0.2, 0.3, 0.4))
+    assert dirty and sha.endswith("*")
+
+
+# -- history across Kaggle's pages ----------------------------------------------
+
+
+def test_gate_sees_a_best_cv_beyond_the_first_page(project, api, capsys):
+    remote_sub(api, "the best · cv=0.95000 · git=abc1234 · sub=00000000")  # oldest
+    for i in range(250):  # more than kship's old single page of 200
+        remote_sub(api, f"later · cv=0.80000 · git=abc1234 · sub={i:08x}")
+    assert cli.main(pipeline(0.9, "a.csv")) == 0
+    assert "doesn't beat your best 0.95000" in capsys.readouterr().out and api.uploads == []
+
+
+def test_all_submissions_stops_when_the_server_ignores_paging(api):
+    from kship.kapi import Kaggle
+
+    for i in range(5):
+        remote_sub(api, f"s{i}")
+    k = Kaggle(api=api)
+    assert len(k.all_submissions(SLUG, page_size=2)) == 5
+    api.ignore_paging = True
+    assert len(k.all_submissions(SLUG, page_size=2)) == 2  # and it terminates
+
+
+# -- cv_scheme: only compare CVs computed the same way ------------------------
+
+
+def set_toml(root, old, new):
+    toml = root / "kship.toml"
+    text = toml.read_text()
+    assert old in text, old
+    toml.write_text(text.replace(old, new))
+
+
+def test_cv_scheme_gates_only_against_the_same_scheme(project, api, capsys):
+    remote_sub(api, "leaky · cv=0.99000 · git=abc1234 · sub=deadbeef")  # the old, leaky CV
+    set_toml(project, 'cv_scheme = ""', 'cv_scheme = "v2"')
+    assert cli.main(pipeline(0.85, "a.csv")) == 0 and len(api.uploads) == 1  # 0.99 was another scheme
+    msg = api.uploads[0][1]
+    assert "cv=0.85000 · cvs=v2 · git=" in msg
+    assert ledger.parse_message(msg)["cv_scheme"] == "v2" and entries(project)[0]["cv_scheme"] == "v2"
+    assert cli.main(pipeline(0.84, "b.csv")) == 0
+    assert "doesn't beat your best 0.85000 (cv_scheme 'v2')" in capsys.readouterr().out
+    assert len(api.uploads) == 1
+
+
+def test_cv_scheme_must_be_tag_safe(project, capsys):
+    set_toml(project, 'cv_scheme = ""', 'cv_scheme = "5 fold"')
+    assert cli.main(["check"]) == 1 and "cv_scheme can only use" in capsys.readouterr().out
+
+
+# -- a ledger that went through a git merge -----------------------------------
+
+
+def test_ledger_with_conflict_markers_says_how_to_fix_it(project, api, capsys):
+    (project / "submissions.jsonl").write_text(
+        '{"n": 1}\n<<<<<<< HEAD\n{"n": 2, "note": "laptop"}\n=======\n{"n": 2, "note": "ci"}\n>>>>>>> main\n'
+    )
+    assert cli.main(["log"]) == 1
+    out = capsys.readouterr().out
+    assert "unresolved git merge conflict (line 2)" in out and "merge=union" in out
+
+
+def test_union_merged_ledger_with_repeated_numbers(project, api):
+    # After merge=union, two machines' #2 sit side by side and the last line isn't the highest.
+    (project / "submissions.jsonl").write_text(
+        '{"n": 1, "status": "scored"}\n{"n": 3, "status": "scored"}\n{"n": 2, "status": "scored"}\n'
+    )
+    write_sub(project, "a.csv")
+    assert cli.main(["submit"]) == 0
+    new = entries(project)[-1]
+    assert new["n"] == 4 and new["public"] == 0.9
+
+
 # -- run ----------------------------------------------------------------------
 
 
@@ -228,9 +367,11 @@ def test_run_output_stays_in_order_when_piped(tmp_path):
     assert out.index("kship run:") < out.index("training...") < out.index("wrote no new file")
 
 
-def test_run_without_cv_still_ships(project, api, capsys):
+def test_run_without_cv_is_not_shipped(project, api, capsys):
+    # A pipeline that stopped printing KSHIP_CV mustn't spend a submission on every merge.
     assert cli.main(pipeline(None, "n.csv")) == 0
-    assert "no CV score to gate on" in capsys.readouterr().out and len(api.uploads) == 1
+    assert "no CV score to gate on" in capsys.readouterr().out and api.uploads == []
+    assert cli.main(["run", "--gate", "always"] + pipeline(None, "m.csv")[1:]) == 0 and len(api.uploads) == 1
 
 
 # -- notebook mode ------------------------------------------------------------
@@ -274,7 +415,7 @@ def test_real_kaggle_api_surface():
         "competition_download_files": {"path", "force", "quiet"},
         "competition_submit": {"quiet"},
         "competition_submit_code": {"quiet"},
-        "competition_submissions": {"page_size"},
+        "competition_submissions": {"page_size", "page_number"},
         "kernels_push": set(),
         "kernels_status": set(),
     }
