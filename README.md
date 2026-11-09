@@ -108,7 +108,7 @@ gh secret set KAGGLE_API_TOKEN < ~/.kaggle/access_token   # or paste one from ka
 The workflow installs kship from `KSHIP_SOURCE` at the top of the file. `kship ci` fills that in
 for you: if kship was installed from git, it reuses that exact URL and revision; otherwise it
 uses this repo's `Repository` URL from `pyproject.toml`, pinned to the release tag (e.g.
-`git+https://github.com/haydn-s/kship@v0.1.0`). Set `KSHIP_SOURCE` or pass `--source` to override.
+`git+https://github.com/haydn-s/kship@v0.1.1`). Set `KSHIP_SOURCE` or pass `--source` to override.
 
 The pipeline runs on a standard GitHub runner (2–4 CPUs, no GPU, 120-minute limit set in the
 workflow). For heavier training, point `runs-on` at a self-hosted runner, or use a code
