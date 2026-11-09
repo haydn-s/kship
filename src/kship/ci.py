@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,7 @@ class Outcome:
     best_public: float | None = None
     message: str = ""
     left_today: int | None = None
+    file: str = ""  # what was judged, relative to the project root (a CSV, or kernel/)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -75,19 +77,29 @@ def emit(o: Outcome) -> None:
             "cv": "" if o.cv is None else f"{o.cv}",
             "best_cv": "" if o.best_cv is None else f"{o.best_cv}",
             "public": "" if o.public is None else f"{o.public}",
+            "file": o.file,
         }
+        # The summary is multi-line, so it uses GitHub's heredoc form with an unguessable delimiter.
+        delimiter = f"KSHIP_{uuid.uuid4().hex}"
         with open(path, "a") as f:
             f.writelines(f"{k}={v}\n" for k, v in values.items())
+            f.write(f"summary<<{delimiter}\n{md}{delimiter}\n")
     level = {"failed": "error", "blocked": "warning"}.get(o.decision, "notice")
     text = f"{HEADLINES.get(o.decision, o.decision)}: {o.reason}".replace("%", "%25").replace("\n", "%0A")
     print(f"::{level} title=kship::{text}")
 
+
+# Third-party actions are pinned to a commit, so a moved tag can't change what runs next to
+# your Kaggle token. GitHub's own actions (actions/*) stay on version tags.
+SETUP_UV = "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3"
 
 WORKFLOW = """\
 # Runs the pipeline on every PR and on main.
 #   pull request -> dry run: validates the submission and posts "would ship / wouldn't ship" on the PR
 #   merge to main -> ships it to Kaggle if CV beats your best submission so far
 # Needs one repo secret: KAGGLE_API_TOKEN (a KGAT_... token from kaggle.com/settings/api).
+# Only the steps that run kship get it: installing your dependencies doesn't, and neither does
+# the job that writes the PR comment.
 name: kship
 
 on:
@@ -96,26 +108,29 @@ on:
     branches: [{branch}]
   workflow_dispatch:
 
+# One run at a time per branch, so two merges can't both ship against the same "best".
+# GitHub keeps only the newest waiting run: with three quick merges, the middle one is
+# cancelled and its commit never runs (the newest one does, and it includes that commit).
 concurrency:
   group: kship-${{{{ github.ref }}}}
   cancel-in-progress: ${{{{ github.event_name == 'pull_request' }}}}
 
 permissions:
   contents: read
-  pull-requests: write
 
 env:
-  KAGGLE_API_TOKEN: ${{{{ secrets.KAGGLE_API_TOKEN }}}}
   KSHIP_SOURCE: {source}
 
 jobs:
   pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      summary: ${{{{ steps.preview.outputs.summary }}}}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10.3.3
+      - uses: {setup_uv}
 
       - name: Install kship and the project's dependencies
         run: |
@@ -123,6 +138,8 @@ jobs:
           make setup
 
       - name: Check Kaggle access
+        env:
+          KAGGLE_API_TOKEN: ${{{{ secrets.KAGGLE_API_TOKEN }}}}
         run: kship doctor
 
       - name: Cache competition data
@@ -134,26 +151,22 @@ jobs:
 
       - name: Download competition data
         if: steps.data.outputs.cache-hit != 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{{{ secrets.KAGGLE_API_TOKEN }}}}
         run: kship data
 
       - name: Preview (dry run)
+        id: preview
         if: github.event_name == 'pull_request'
         env:
-          KSHIP_SUMMARY_FILE: ${{{{ runner.temp }}}}/kship.md
+          KAGGLE_API_TOKEN: ${{{{ secrets.KAGGLE_API_TOKEN }}}}
         run: kship run --dry-run -- {python} -m src.pipeline
 
-      - name: Comment the preview on the PR
-        if: always() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{{{ github.token }}}}
-          PR: ${{{{ github.event.pull_request.number }}}}
-        run: |
-          [ -f "$RUNNER_TEMP/kship.md" ] || exit 0
-          gh pr comment "$PR" --body-file "$RUNNER_TEMP/kship.md" --edit-last --create-if-none
-
       - name: Ship to Kaggle if CV improved
+        id: ship
         if: github.event_name != 'pull_request'
         env:
+          KAGGLE_API_TOKEN: ${{{{ secrets.KAGGLE_API_TOKEN }}}}
           # kship notes the subject line, or the PR title for "Merge pull request #N" commits
           NOTE: ${{{{ github.event.head_commit.message }}}}
         run: |
@@ -169,15 +182,33 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: submission-${{{{ github.sha }}}}
+          # just the file kship judged, not everything in submissions/
           path: |
-            submissions/
+            ${{{{ steps.preview.outputs.file || steps.ship.outputs.file || 'submissions.jsonl' }}}}
             submissions.jsonl
           if-no-files-found: ignore
+          retention-days: 30
+
+  # Separate from the job that runs your code, so only this job can write to the PR.
+  comment:
+    needs: pipeline
+    if: always() && github.event_name == 'pull_request' && needs.pipeline.outputs.summary != ''
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment the preview on the PR
+        env:
+          GH_TOKEN: ${{{{ github.token }}}}
+          GH_REPO: ${{{{ github.repository }}}}
+          PR: ${{{{ github.event.pull_request.number }}}}
+          BODY: ${{{{ needs.pipeline.outputs.summary }}}}
+        run: gh pr comment "$PR" --body "$BODY" --edit-last --create-if-none
 """
 
 
 def render_workflow(source: str, python: str = ".venv/bin/python", branch: str = "main") -> str:
-    return WORKFLOW.format(source=source, python=python, branch=branch)
+    return WORKFLOW.format(source=source, python=python, branch=branch, setup_uv=SETUP_UV)
 
 
 def write_workflow(root: Path, source: str, branch: str = "main", force: bool = False) -> Path:

@@ -559,6 +559,40 @@ def test_ci_command_writes_workflow(project, api, capsys):
     assert "Ship to Kaggle if CV improved" in steps
 
 
+def test_workflow_keeps_the_token_and_pr_write_access_narrow(project, api):
+    import yaml
+
+    assert cli.main(["ci"]) == 0
+    doc = yaml.safe_load((project / ".github/workflows/kship.yml").read_text())
+    assert "KAGGLE_API_TOKEN" not in doc["env"] and doc["permissions"] == {"contents": "read"}
+    pipeline_job, comment = doc["jobs"]["pipeline"], doc["jobs"]["comment"]
+    assert "permissions" not in pipeline_job and comment["permissions"] == {"pull-requests": "write"}
+    steps = {s.get("name") or s["uses"]: s for s in pipeline_job["steps"]}
+    with_token = {n for n, s in steps.items() if "KAGGLE_API_TOKEN" in (s.get("env") or {})}
+    assert with_token == {
+        "Check Kaggle access",
+        "Download competition data",
+        "Preview (dry run)",
+        "Ship to Kaggle if CV improved",
+    }
+    assert "make setup" in steps["Install kship and the project's dependencies"]["run"]
+    assert "KAGGLE_API_TOKEN" not in str(comment)
+    setup_uv = next(s["uses"] for s in pipeline_job["steps"] if "setup-uv" in s.get("uses", ""))
+    assert len(setup_uv.split("@")[1]) == 40  # a commit, not a tag
+    assert "submissions/\n" not in steps["Keep the submission and ledger"]["with"]["path"]
+
+
+def test_ci_outputs_file_and_multiline_summary(project, api, monkeypatch, tmp_path):
+    _, output = actions_env(monkeypatch, tmp_path)
+    assert cli.main(["run", "--dry-run"] + pipeline(0.85, "a.csv")[1:]) == 0
+    text = output.read_text()
+    assert "file=submissions/a.csv\n" in text
+    head, _, rest = text.partition("summary<<")
+    delimiter, _, body = rest.partition("\n")
+    summary = body.split(f"\n{delimiter}\n")[0]
+    assert delimiter.startswith("KSHIP_") and summary.startswith("### kship · demo-comp") and "Would ship" in summary
+
+
 def test_data_unwraps_single_folder_zip(project, api):
     assert cli.main(["data"]) == 0
     assert (project / "data/train.csv").exists() and (project / "data/sample_submission.csv").exists()
