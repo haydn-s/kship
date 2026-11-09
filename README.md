@@ -93,7 +93,9 @@ The markers work from any language and any tool: notebooks via `jupyter nbconver
 
 - **pull request**: installs, downloads data (cached), runs the pipeline with `--dry-run`, and comments on the PR whether it *would* ship, with this run's CV next to your best
 - **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it. The submission's note is the commit's subject line, or the PR title for "Merge pull request #N" commits
-- serialized per branch, so two quick merges can't race each other for the same "best"
+- serialized per branch, so two quick merges can't race each other for the same "best". GitHub keeps only the newest waiting run, so with three quick merges the middle one is cancelled; the newest run includes its commit
+- `KAGGLE_API_TOKEN` reaches only the steps that run kship, not `make setup` (installing dependencies). The PR comment is posted by a separate job, the only one that can write to the PR
+- each run keeps the file kship judged and `submissions.jsonl` as an artifact for 30 days
 
 **No shared state needed.** Every submission message is tagged, e.g.
 `lightgbm + TE · cv=0.88120 · git=a1b2c3d · sub=5fa03265`. kship reads those tags back from Kaggle's

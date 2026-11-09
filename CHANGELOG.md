@@ -8,6 +8,7 @@
 - **Behaviour change:** `kship run` (and `--gate better`) no longer ships when there's no CV score; it says why and exits 0. A pipeline that stopped printing `KSHIP_CV` (or started printing it to stderr) would otherwise spend a submission on every merge. Use `--gate always` (`make force-ship`) to ship without one
 - New `cv_scheme` setting in `kship.toml`. Change it when you change how CV is computed: submissions are tagged `cvs=<scheme>`, and the gate, the best CV in `kship log`, and the CV↔LB correlation only compare within one scheme. Before, one leaky CV could block the gate for good
 - The CV↔LB verdict needs 8 submissions with both scores, not 4. With 4, random scores look like strong agreement one time in six
+- CI workflow (regenerate with `kship ci --force`): `KAGGLE_API_TOKEN` is set only on the steps that run kship, so `make setup` doesn't see it; the PR comment comes from a separate job, the only one with `pull-requests: write`; `astral-sh/setup-uv` is pinned to a commit; the artifact holds just the judged file and the ledger, kept 30 days, instead of all of `submissions/`. kship writes two more step outputs, `file` and `summary`
 - `submissions.jsonl` copes with git merges: `kship new` adds `submissions.jsonl merge=union` to `.gitattributes`, unresolved conflict markers get a clear message saying how to fix them (instead of a JSONDecodeError), and new records are numbered after the highest number rather than after the last line
 
 ## 0.1.1 (2026-11-08)

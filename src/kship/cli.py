@@ -454,7 +454,7 @@ def ship(
     """Validate, dedupe, gate, check quota, upload, wait for the score. Returns an exit code."""
     slug = cfg.competition
     higher = cfg.higher_is_better
-    out = Outcome(decision="failed", reason="", competition=slug, cv=cv)
+    out = Outcome(decision="failed", reason="", competition=slug, cv=cv, file=rel(path, cfg.root))
     say = {
         "shipped": lambda m: good(m),
         "would-ship": lambda m: good(f"dry run, nothing uploaded: would ship. {m}"),
