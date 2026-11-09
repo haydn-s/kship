@@ -48,6 +48,8 @@ class FakeApi:
         self.code_submits: list[tuple] = []
         self.sample_name = "sample_submission.csv"  # class competitions often nest it: for_students/...
         self.zip_downloads = False  # Kaggle serves large files as <name>.zip
+        self.ignore_paging = False
+        self.nested_data = False  # `kship data`'s archive keeps the sample in a subfolder
 
     def competitions_list(self, group=None, search=None, category=None, page_size=20, **_):
         if group is not None:
@@ -91,6 +93,8 @@ class FakeApi:
         with zipfile.ZipFile(Path(path, f"{slug}.zip"), "w") as z:  # wrapped in one folder, like many class comps
             z.writestr("for_students/train.csv", "id,x,target\n1,1,0\n")
             z.writestr("for_students/sample_submission.csv", SAMPLE)
+            if self.nested_data:  # a second top-level entry, so the folder isn't unwrapped
+                z.writestr("README.md", "about the data\n")
 
     def _new_sub(self, message):
         ref = str(1000 + len(self.subs))
@@ -112,15 +116,19 @@ class FakeApi:
         self.uploads.append((file_name, message))
         return NS(message="Successfully submitted", ref=self._new_sub(message))
 
-    def competition_submissions(self, competition, page_size=20, **_):
-        self.polls += 1
-        for s in self.subs:
-            if s.status is Status.PENDING and self.polls >= self.score_after_polls:
-                if self.fail_score:
-                    s.status, s.error_description = Status.ERROR, "bad file"
-                else:
-                    s.status, s.public_score = Status.COMPLETE, str(self.next_score)
-        return list(self.subs)
+    def competition_submissions(self, competition, page_number=-1, page_size=20, **_):
+        page = max(page_number, 1)  # like the real client: -1 means the first page
+        if page == 1:
+            self.polls += 1
+            for s in self.subs:
+                if s.status is Status.PENDING and self.polls >= self.score_after_polls:
+                    if self.fail_score:
+                        s.status, s.error_description = Status.ERROR, "bad file"
+                    else:
+                        s.status, s.public_score = Status.COMPLETE, str(self.next_score)
+        if self.ignore_paging:  # a server that always answers with the same first page
+            return list(self.subs[:page_size])
+        return list(self.subs[(page - 1) * page_size : page * page_size])
 
     def kernels_push(self, folder, timeout=None, acc=None):
         self.kernel_pushes += 1

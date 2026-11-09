@@ -99,7 +99,12 @@ def check_submission(
         s_header, s_ids, s_numeric = _read_sample(sample)
         res.against_sample = s_header is not None
     else:
-        res.warnings.append(f"sample submission {sample} not found, so the header, row count and IDs weren't checked")
+        # Configured but absent (a fresh CI runner, a moved data/ folder): an error, not a
+        # warning, or a file with the wrong IDs would sail through as "passing".
+        res.errors.append(
+            f"sample submission {sample} not found, so the header, row count and IDs can't be checked. "
+            "Run `kship data`, or fix sample_submission in kship.toml"
+        )
 
     with _open_text(path) as f:
         reader = csv.reader(f)

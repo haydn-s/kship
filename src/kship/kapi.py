@@ -297,8 +297,9 @@ class Kaggle:
 
     # -- scores ---------------------------------------------------------------
 
-    def submissions(self, slug: str, page_size: int = 50) -> list[Submission]:
-        subs = self.api.competition_submissions(slug, page_size=page_size) or []
+    def submissions(self, slug: str, page_size: int = 50, page: int = 1) -> list[Submission]:
+        """One page of your submissions, newest first."""
+        subs = self.api.competition_submissions(slug, page_number=page, page_size=page_size) or []
         return [
             Submission(
                 ref=str(s.ref),
@@ -312,6 +313,23 @@ class Kaggle:
             for s in subs
             if s is not None
         ]
+
+    def all_submissions(self, slug: str, page_size: int = 100, max_pages: int = 100) -> list[Submission]:
+        """Every submission, across pages. A long competition easily passes one page, and a
+        best CV or a fingerprint on page 2 still has to count for the gate and the dedupe.
+
+        Stops at the first page that adds nothing new rather than at a short page, so it
+        still reads everything if the server caps page_size below what was asked for.
+        """
+        out: list[Submission] = []
+        seen: set[str] = set()
+        for page in range(1, max_pages + 1):
+            batch = [s for s in self.submissions(slug, page_size, page) if s.ref not in seen]
+            if not batch:
+                break
+            seen.update(s.ref for s in batch)
+            out += batch
+        return out
 
     def wait_for_score(
         self, slug: str, ref: str | None, message: str, timeout_s: float, interval: float = 15

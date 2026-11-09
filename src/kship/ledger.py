@@ -9,11 +9,20 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
+from kship import KshipError
 
-def git_info(cwd: Path) -> dict | None:
+
+def git_info(cwd: Path, ignore: Iterable[str] = ()) -> dict | None:
+    """The commit a submission comes from, and whether the work tree differs from it.
+
+    `ignore` lists files (relative to cwd) that don't count as uncommitted changes:
+    kship's own ledger changes with every submission, which says nothing about the code.
+    """
+
     def git(*args: str) -> str:
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
@@ -22,7 +31,8 @@ def git_info(cwd: Path) -> dict | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     try:
-        dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
+        excluded = [f":(exclude){name}" for name in ignore]
+        dirty = bool(git("status", "--porcelain", "--untracked-files=no", "--", ":/", *excluded))
         branch = git("rev-parse", "--abbrev-ref", "HEAD")
     except subprocess.CalledProcessError:
         dirty, branch = False, ""
@@ -35,14 +45,27 @@ def git_label(info: dict | None) -> str:
     return info["sha"] + ("*" if info.get("dirty") else "")
 
 
+_CONFLICT_MARKER = re.compile(r"^(<{7}|={7}|>{7}|\|{7})(\s|$)")
+
+
 def load(path: Path) -> list[dict]:
     if not path.is_file():
         return []
     out = []
-    for line in path.read_text().splitlines():
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             out.append(json.loads(line))
+        except ValueError:
+            if _CONFLICT_MARKER.match(line):
+                raise KshipError(
+                    f"{path.name} has an unresolved git merge conflict (line {lineno}). Keep the lines from "
+                    "both sides and delete the <<<<<<< ======= >>>>>>> markers. To stop it happening again, "
+                    f"add this line to .gitattributes:  {path.name} merge=union"
+                ) from None
+            raise KshipError(f"{path.name} line {lineno} isn't valid JSON: {line[:60]}") from None
     return out
 
 
@@ -52,9 +75,14 @@ def save(path: Path, records: list[dict]) -> None:
     tmp.replace(path)
 
 
+def next_n(records: list[dict]) -> int:
+    # The highest number, not the last line's: after a union merge of two machines'
+    # ledgers, the last line isn't necessarily the newest.
+    return max((r.get("n") or 0 for r in records), default=0) + 1
+
+
 def append(path: Path, record: dict) -> dict:
-    records = load(path)
-    record = {"n": (records[-1]["n"] + 1) if records else 1, **record}
+    record = {"n": next_n(load(path)), **record}
     with open(path, "a") as f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
     return record
@@ -90,6 +118,11 @@ def improves(new: float, old: float, higher: bool, margin: float = 0.0) -> bool:
     return new > old + margin if higher else new < old - margin
 
 
+def same_scheme(records: list[dict], scheme: str) -> list[dict]:
+    """Submissions whose CV was computed the same way (kship.toml's cv_scheme), so their CVs compare."""
+    return [r for r in records if (r.get("cv_scheme") or "") == scheme]
+
+
 def find_duplicate(records: list[dict], digest: str) -> dict | None:
     for r in reversed(counted(records)):
         if r.get("sha256") == digest or r.get("sub") == digest[:8]:
@@ -103,10 +136,11 @@ def label(r: dict) -> str:
 
 # -- Kaggle as the source of truth ---------------------------------------------
 # kship tags every submission message with `cv=`, `git=` and `sub=` (the file's
-# fingerprint). Reading those back from Kaggle lets a fresh CI runner, or another
-# machine, gate and dedupe against everything ever submitted, with no shared state.
+# fingerprint), plus `cvs=` when kship.toml sets a cv_scheme. Reading those back
+# from Kaggle lets a fresh CI runner, or another machine, gate and dedupe against
+# everything ever submitted, with no shared state.
 
-_TAG = re.compile(r"(?<![\w=])(cv|git|sub)=([^\s·]+)")
+_TAG = re.compile(r"(?<![\w=])(cv|cvs|git|sub)=([^\s·]+)")
 KAGGLE_STATUS = {"COMPLETE": "scored", "ERROR": "error"}
 
 
@@ -115,6 +149,8 @@ def parse_message(desc: str) -> dict:
     for key, val in _TAG.findall(desc or ""):
         if key == "cv":
             out["cv"] = as_float(val)
+        elif key == "cvs":
+            out["cv_scheme"] = val
         elif key == "git":
             out["git"] = {"sha": val.rstrip("*"), "dirty": val.endswith("*"), "branch": ""}
         elif key == "sub":
@@ -172,17 +208,25 @@ def spearman(xs: list[float], ys: list[float]) -> float | None:
     return cov / (vx * vy) ** 0.5
 
 
+# Below this many CV/public pairs the correlation is mostly noise: with 4, shuffled
+# scores reach rho >= 0.7 one time in 6; with 8, about one time in 35.
+MIN_PAIRS = 8
+
+
 def cv_lb_verdict(records: list[dict]) -> str | None:
-    """How far your local CV can be trusted, judged by how it ranks against the public LB."""
+    """How far your local CV can be trusted, judged by how it ranks against the public LB.
+
+    Pass submissions from one cv_scheme only: CVs computed different ways don't rank together.
+    """
     pairs = [(as_float(r.get("cv")), as_float(r.get("public"))) for r in counted(records)]
     pairs = [(c, p) for c, p in pairs if c is not None and p is not None]
-    if len(pairs) < 4:
+    if len(pairs) < MIN_PAIRS:
         return None
     rho = spearman([c for c, _ in pairs], [p for _, p in pairs])
     if rho is None:
         return None
     if rho >= 0.7:
-        verdict = "your CV ranks submissions the way the leaderboard does. Trust it."
+        verdict = "your CV ranks submissions the way the leaderboard does, so trust it over the public score."
     elif rho >= 0.3:
         verdict = "CV and leaderboard only loosely agree. Lean on CV, but watch the gap."
     else:
@@ -231,7 +275,7 @@ def render_table(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def render_markdown(records: list[dict], competition: str) -> str:
+def render_markdown(records: list[dict], competition: str, cv_scheme: str = "") -> str:
     md = [
         "# Submission history",
         "",
@@ -244,7 +288,7 @@ def render_markdown(records: list[dict], competition: str) -> str:
     for r, row in zip(records, rows(records), strict=True):
         row[-1] = row[-1].replace("|", "\\|")
         md.append("| " + " | ".join(row) + f" | {_fmt(r.get('private'))} |")
-    verdict = cv_lb_verdict(records)
+    verdict = cv_lb_verdict(same_scheme(records, cv_scheme))
     if verdict:
         md += ["", verdict]
     return "\n".join(md) + "\n"

@@ -75,8 +75,13 @@ def test_without_sample_still_catches_basics(tmp_path):
 def test_without_sample_says_what_was_not_checked(tmp_path):
     res = check_submission(make(tmp_path, "s.csv", "id,y\n1,0.2\n"), None)
     assert res.ok and not res.against_sample and "IDs weren't checked" in res.warnings[0]
-    missing = check_submission(make(tmp_path, "t.csv", "id,y\n1,0.2\n"), tmp_path / "nope.csv")
-    assert not missing.against_sample and "IDs weren't checked" in missing.warnings[0]
+
+
+def test_configured_sample_that_is_missing_is_an_error(tmp_path):
+    # A sample named in kship.toml but absent (e.g. on a fresh CI runner) must not let
+    # a file with the wrong IDs pass as valid.
+    res = check_submission(make(tmp_path, "t.csv", "id,y\n1,0.2\n99,0.1\n"), tmp_path / "nope.csv")
+    assert not res.ok and not res.against_sample and "can't be checked" in res.errors[0]
 
 
 def test_with_sample_is_marked_as_compared(tmp_path):

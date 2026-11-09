@@ -17,7 +17,16 @@ from pathlib import Path
 from kship import KshipError, __version__, ledger
 from kship.check import CheckResult, check_submission, sha256
 from kship.ci import EXIT_FAILED, Outcome, emit, in_actions, write_workflow
-from kship.config import CONFIG_NAME, Config, find_config, guess_higher_is_better, load, render
+from kship.config import (
+    CONFIG_NAME,
+    LEDGER_NAME,
+    MARKDOWN_NAME,
+    Config,
+    find_config,
+    guess_higher_is_better,
+    load,
+    render,
+)
 from kship.kapi import AUTH_HELP, Kaggle, credential_sources, explain
 from kship.scaffold import write_kernel, write_project
 
@@ -123,6 +132,25 @@ def resolve_file(arg: str | None, cfg: Config) -> Path:
     return found
 
 
+def place_sample(cfg: Config) -> Path | None:
+    """kship.toml's sample submission, copied into place if `kship data` unpacked it elsewhere.
+
+    `kship init` saves the sample as data/<its name>. `kship data` keeps the archive's own
+    folders (data/for_students/sample_submission.csv), so on a fresh CI runner the
+    configured path can be missing even though the file was downloaded.
+    """
+    sample = cfg.sample_path
+    if sample is None or sample.is_file():
+        return sample
+    data = cfg.root / "data"
+    found = [p for p in data.rglob(sample.name) if p.is_file()] if data.is_dir() else []
+    if len(found) == 1:
+        sample.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(found[0], sample)
+        note(f"copied {rel(found[0], cfg.root)} to {rel(sample, cfg.root)}, where kship.toml expects the sample")
+    return sample
+
+
 def dir_digest(folder: Path) -> str:
     h = hashlib.sha256()
     for p in sorted(folder.rglob("*")):
@@ -148,10 +176,15 @@ def note_line(text: str | None) -> str:
     return lines[0]
 
 
-def build_message(note_text: str, cv: float | None, git: dict | None, digest: str, fallback: str) -> str:
+def build_message(
+    note_text: str, cv: float | None, git: dict | None, digest: str, fallback: str, cv_scheme: str = ""
+) -> str:
     """The Kaggle submission description. The tags are machine-readable on purpose:
     kship reads them back to gate and dedupe from any machine, CI included."""
-    tags = ([f"cv={cv:.5f}"] if cv is not None else []) + [f"git={ledger.git_label(git)}", f"sub={digest[:8]}"]
+    tags = [f"cv={cv:.5f}"] if cv is not None else []
+    if cv is not None and cv_scheme:
+        tags.append(f"cvs={cv_scheme}")
+    tags += [f"git={ledger.git_label(git)}", f"sub={digest[:8]}"]
     tail = " · " + " · ".join(tags)
     head = " ".join((note_line(note_text) or fallback).split()).replace("=", ":")
     return head[: 250 - len(tail)] + tail
@@ -387,6 +420,9 @@ def cmd_data(args) -> int:
     headline(f"downloading {cfg.competition} into {rel(dest, Path.cwd())}/")
     for p in k.download_all(cfg.competition, dest):
         note(f"{rel(p, cfg.root)}  ({p.stat().st_size / 1e6:.1f} MB)")
+    sample = place_sample(cfg)
+    if sample is not None and not sample.is_file():
+        warn(f"sample_submission in {CONFIG_NAME} ({cfg.sample_submission}) isn't among the downloaded files")
     return 0
 
 
@@ -397,7 +433,7 @@ def cmd_check(args) -> int:
     cfg = load()
     if cfg.mode == "notebook" and not args.file:
         raise KshipError("this is a code competition; pass a local CSV to check, e.g. kship check out.csv")
-    res = check_submission(resolve_file(args.file, cfg), cfg.sample_path, cfg.value_range)
+    res = check_submission(resolve_file(args.file, cfg), place_sample(cfg), cfg.value_range)
     report(res)
     return 0 if res.ok else 1
 
@@ -439,12 +475,22 @@ def ship(
             return finish("failed", f"{rel(path, cfg.root)}/kernel-metadata.json is missing")
         digest = dir_digest(path)
         good(f"kernel {rel(path, cfg.root)}/ ready to push")
+        ready = f"{rel(path, cfg.root)}/ is ready to push"
     else:
-        res = check_submission(path, cfg.sample_path, cfg.value_range)
+        sample = place_sample(cfg)
+        if sample is not None and not sample.is_file():
+            return finish(
+                "failed",
+                f"the sample submission ({rel(sample, cfg.root)}) is missing, so the IDs can't be checked. "
+                f"Run `kship data`, or fix sample_submission in {CONFIG_NAME}",
+            )
+        res = check_submission(path, sample, cfg.value_range)
         report(res)
         if not res.ok:
             return finish("failed", "fix the file first; uploading it would have cost a submission")
         digest = sha256(path)
+        checked = "passes every check" if res.against_sample else "passes the basic checks (no sample to compare)"
+        ready = f"{rel(path, cfg.root)} {checked}"
 
     # 2. History = this machine's ledger + everything Kaggle has on record. Reading Kaggle
     #    means a fresh CI runner (or another laptop) gates against the same best score.
@@ -452,7 +498,7 @@ def ship(
     remote: list[dict] = []
     try:
         k = make_kaggle()
-        remote = [ledger.from_kaggle(s) for s in k.submissions(slug, page_size=200)]
+        remote = [ledger.from_kaggle(s) for s in k.all_submissions(slug)]
     except Exception as e:  # no credentials, 403 before the rules are accepted, network
         msg = str(e).splitlines()[0] if isinstance(e, KshipError) else explain(e)
         if not dry_run:
@@ -466,7 +512,9 @@ def ship(
     history = ledger.merge(ledger.load(cfg.ledger_path), remote)
 
     direction = higher if higher is not None else True
-    prev_cv = ledger.best(history, "cv", higher) if higher is not None else None
+    # CVs only compare within one cv_scheme; public scores always compare.
+    comparable = ledger.same_scheme(history, cfg.cv_scheme)
+    prev_cv = ledger.best(comparable, "cv", higher) if higher is not None else None
     prev_pub = ledger.best(history, "public", direction)
     out.best_cv = prev_cv[0] if prev_cv else None
     out.best_public = prev_pub[0] if prev_pub else None
@@ -482,30 +530,38 @@ def ship(
             + ". Use --force to send it again.",
         )
 
-    # 4. CV gate.
+    # 4. CV gate. Without a CV there's nothing to beat, and a pipeline that stopped
+    #    printing one (say it moved to `logging`, which writes to stderr) would otherwise
+    #    spend a submission on every merge.
     verdict = ""
+    scheme = f" (cv_scheme {cfg.cv_scheme!r})" if cfg.cv_scheme else ""
     if gate == "better":
         if cv is None:
-            warn("no CV score to gate on (print KSHIP_CV=<score> or pass --cv); shipping anyway")
-        elif higher is None:
+            return finish(
+                "skipped",
+                "no CV score to gate on. Print KSHIP_CV=<score> to stdout or pass --cv, "
+                "or use --gate always to ship without one.",
+            )
+        if higher is None:
             return finish(
                 "failed",
                 "set higher_is_better in kship.toml so the CV gate knows which way is up (or pass --gate always)",
             )
-        elif prev_cv and not ledger.improves(cv, prev_cv[0], higher, cfg.min_improvement):
+        if prev_cv and not ledger.improves(cv, prev_cv[0], higher, cfg.min_improvement):
             return finish(
                 "skipped",
-                f"cv {cv:.5f} doesn't beat your best {prev_cv[0]:.5f} "
+                f"cv {cv:.5f} doesn't beat your best {prev_cv[0]:.5f}{scheme} "
                 f"({ledger.label(prev_cv[1])}). Use --gate always to ship anyway.",
             )
-        elif prev_cv:
-            verdict = f"cv {cv:.5f} beats your best {prev_cv[0]:.5f} ({ledger.label(prev_cv[1])})"
+        if prev_cv:
+            verdict = f"cv {cv:.5f} beats your best {prev_cv[0]:.5f}{scheme} ({ledger.label(prev_cv[1])})"
             good(verdict)
         else:
-            verdict = f"cv {cv:.5f} is the first CV on record"
+            verdict = f"cv {cv:.5f} is the first CV on record{scheme}"
 
-    git = ledger.git_info(cfg.root)
-    message = build_message(note_text, cv, git, digest, path.name if cfg.mode == "file" else "kernel")
+    git = ledger.git_info(cfg.root, ignore=(LEDGER_NAME, MARKDOWN_NAME))
+    fallback = path.name if cfg.mode == "file" else "kernel"
+    message = build_message(note_text, cv, git, digest, fallback, cfg.cv_scheme)
     out.message = message
     if git and git.get("dirty"):
         warn("uncommitted changes: this submission won't be reproducible from its commit alone")
@@ -515,7 +571,7 @@ def ship(
     if lim is not None:
         out.left_today = lim.allowed_now
     if dry_run:
-        return finish("would-ship", verdict or f"{rel(path, cfg.root)} passes every check")
+        return finish("would-ship", verdict or ready)
     if lim is not None:
         floor = cfg.reserve if automated else 0
         if lim.allowed_now == 0 and lim.total == 0:
@@ -561,6 +617,7 @@ def ship(
             "sub": digest[:8],
             "git": git,
             "cv": cv,
+            "cv_scheme": cfg.cv_scheme or None,
             "note": note_line(note_text),
             "message": message,
             "ref": ref,
@@ -588,7 +645,8 @@ def ship(
         warn(f"lost track of the score ({e})")
         sub = None
     records = ledger.load(cfg.ledger_path)
-    current = next(r for r in records if r["n"] == rec["n"])
+    # Not by "n": a union-merged ledger can hold two records with the same number.
+    current = next(r for r in records if (r.get("time"), r.get("sha256")) == (rec["time"], rec["sha256"]))
     if sub is not None:
         current["ref"] = current.get("ref") or sub.ref
         current["status"] = ledger.KAGGLE_STATUS.get(sub.status, "pending")
@@ -732,7 +790,7 @@ def cmd_log(args) -> int:
     records = ledger.load(cfg.ledger_path)
     if args.refresh:
         k = make_kaggle()
-        live = {s.ref: s for s in k.submissions(cfg.competition, page_size=200)}
+        live = {s.ref: s for s in k.all_submissions(cfg.competition)}
         changed = 0
         for r in records:
             s = live.pop(str(r.get("ref")), None)
@@ -744,11 +802,9 @@ def cmd_log(args) -> int:
                 changed += 1
         # Submissions made elsewhere (CI, another machine, the website) join the ledger too.
         imported = sorted((ledger.from_kaggle(s) for s in live.values()), key=lambda r: r.get("time") or "")
-        n = max((r.get("n", 0) for r in records), default=0)
         for r in imported:
-            n += 1
-            records.append({"n": n, **r})
-        records.sort(key=lambda r: r["n"])
+            records.append({"n": ledger.next_n(records), **r})
+        records.sort(key=lambda r: r.get("n") or 0)
         ledger.save(cfg.ledger_path, records)
         note(f"refreshed from Kaggle: {changed} updated, {len(imported)} imported")
 
@@ -757,17 +813,19 @@ def cmd_log(args) -> int:
         return 0
     print(ledger.render_table(records))
     higher = cfg.higher_is_better if cfg.higher_is_better is not None else True
+    comparable = ledger.same_scheme(records, cfg.cv_scheme)
     for key in ("cv", "public", "private"):
-        b = ledger.best(records, key, higher)
+        b = ledger.best(comparable if key == "cv" else records, key, higher)
         if b:
-            note(f"best {key}: {b[0]:.5f} ({ledger.label(b[1])}, {ledger.git_label(b[1].get('git'))})")
-    verdict = ledger.cv_lb_verdict(records)
+            label = f"best {key}" + (f" (cv_scheme {cfg.cv_scheme!r})" if key == "cv" and cfg.cv_scheme else "")
+            note(f"{label}: {b[0]:.5f} ({ledger.label(b[1])}, {ledger.git_label(b[1].get('git'))})")
+    verdict = ledger.cv_lb_verdict(comparable)
     if verdict:
         print()
         print(verdict)
     if args.md:
-        out = cfg.root / "SUBMISSIONS.md"
-        out.write_text(ledger.render_markdown(records, cfg.competition))
+        out = cfg.root / MARKDOWN_NAME
+        out.write_text(ledger.render_markdown(records, cfg.competition, cfg.cv_scheme))
         good(f"wrote {rel(out, Path.cwd())}")
     return 0
 

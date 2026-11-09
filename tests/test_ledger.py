@@ -23,14 +23,22 @@ def test_improves_with_margin():
     assert ledger.improves(0.5, 0.6, False)
 
 
-def test_verdict_needs_four_pairs():
-    recs = [
-        {"n": i, "cv": c, "public": p, "status": "scored"}
-        for i, (c, p) in enumerate([(0.8, 0.79), (0.82, 0.81), (0.85, 0.83)], 1)
-    ]
+def test_verdict_needs_eight_pairs():
+    # With 4 pairs, shuffled scores reach rho >= 0.7 one time in 6: too often to say "trust it".
+    recs = [{"n": i, "cv": 0.8 + i / 100, "public": 0.79 + i / 100, "status": "scored"} for i in range(1, 8)]
     assert ledger.cv_lb_verdict(recs) is None
-    recs.append({"n": 4, "cv": 0.9, "public": 0.88, "status": "scored"})
-    assert "Trust it" in ledger.cv_lb_verdict(recs)
+    recs.append({"n": 8, "cv": 0.9, "public": 0.89, "status": "scored"})
+    assert "trust it" in ledger.cv_lb_verdict(recs)
+
+
+def test_verdict_in_markdown_only_uses_the_current_scheme():
+    old = [{"n": i, "cv": 0.9 - i / 100, "public": 0.7 + i / 100, "status": "scored"} for i in range(1, 9)]
+    new = [
+        {"n": 8 + i, "cv": 0.8 + i / 100, "public": 0.8 + i / 100, "status": "scored", "cv_scheme": "v2"}
+        for i in range(1, 9)
+    ]
+    assert "disagree" in ledger.render_markdown(old + new, "comp")
+    assert "trust it" in ledger.render_markdown(old + new, "comp", cv_scheme="v2")
 
 
 def test_append_numbers_and_roundtrip(tmp_path):

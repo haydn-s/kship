@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Submitting no longer marks your commit dirty (`git=a1b2c3d*`, "uncommitted changes") just because the last submission added a line to `submissions.jsonl`. The ledger and `SUBMISSIONS.md` don't count as uncommitted changes; everything else still does
+- A `sample_submission` that's set in `kship.toml` but missing on disk is now an error. Before, the header, row count and ID checks were skipped with a warning, and `kship run --dry-run` said a file with the wrong IDs "passes every check". This could happen on a CI runner, because `kship data` keeps the archive's folders (`data/for_students/sample_submission.csv`) while `kship init` saves the sample as `data/sample_submission.csv`. Now `kship data`, `kship check` and shipping copy the sample to where `kship.toml` expects it when there's exactly one file by that name under `data/`
+- History reads every page of your Kaggle submissions, not just the newest 200. Past 200, older best CVs and fingerprints had stopped counting, so the gate could ship a worse CV and the duplicate check could upload the same file again
+- **Behaviour change:** `kship run` (and `--gate better`) no longer ships when there's no CV score; it says why and exits 0. A pipeline that stopped printing `KSHIP_CV` (or started printing it to stderr) would otherwise spend a submission on every merge. Use `--gate always` (`make force-ship`) to ship without one
+- New `cv_scheme` setting in `kship.toml`. Change it when you change how CV is computed: submissions are tagged `cvs=<scheme>`, and the gate, the best CV in `kship log`, and the CV↔LB correlation only compare within one scheme. Before, one leaky CV could block the gate for good
+- The CV↔LB verdict needs 8 submissions with both scores, not 4. With 4, random scores look like strong agreement one time in six
+- `submissions.jsonl` copes with git merges: `kship new` adds `submissions.jsonl merge=union` to `.gitattributes`, unresolved conflict markers get a clear message saying how to fix them (instead of a JSONDecodeError), and new records are numbered after the highest number rather than after the last line
+
 ## 0.1.1 (2026-11-08)
 
 Upgrading: reinstall kship (`uv tool install --force 'git+https://github.com/haydn-s/kship@v0.1.1' --with six`, or `git pull` in an editable clone), then run `kship ci --force` in each competition repo so its workflow installs 0.1.1. That overwrites any edits you made to `.github/workflows/kship.yml`.

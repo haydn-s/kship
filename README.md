@@ -51,12 +51,15 @@ For an existing project, `kship init <slug>` adds just the `kship.toml`.
 
 ## Wire it into your pipeline
 
-Your pipeline writes its CSV into `submissions/` and prints two marker lines:
+Your pipeline writes its CSV into `submissions/` and prints two marker lines to stdout:
 
 ```python
 print(f"KSHIP_FILE={path}")   # optional: otherwise the newest new file in submissions/ is used
 print(f"KSHIP_CV={cv:.6f}")   # your cross-validated score, used by the gate
 ```
+
+With no `KSHIP_CV` line there's nothing for the gate to compare, so `kship run` doesn't ship
+(it says why). Pass `--gate always` to ship anyway, e.g. for a first baseline.
 
 Then any command can be shipped:
 
@@ -98,6 +101,11 @@ own submission list, so a fresh CI runner gates against submissions made from yo
 versa, and the `sub=` fingerprint stops the same predictions from being uploaded twice anywhere.
 `kship log --refresh` pulls CI's submissions into your local ledger.
 
+`submissions.jsonl` is meant to be committed. `kship new` adds `submissions.jsonl merge=union` to
+`.gitattributes`, so lines added on two machines merge without a conflict; in an existing project,
+add that line yourself. Changes to the ledger and `SUBMISSIONS.md` don't mark a submission's
+commit as dirty.
+
 One-time per competition repo:
 
 ```sh
@@ -127,7 +135,21 @@ for later steps to use.
 
 ## CV↔LB agreement
 
-Once four or more submissions have both a CV and a public score, `kship log` reports the Spearman rank correlation between them. High means your CV ranks models the way the leaderboard does, so trust it. Low means the public split is noisy or your CV leaks, so stop tuning against the public score.
+Once eight or more submissions have both a CV and a public score, `kship log` reports the Spearman rank correlation between them. High means your CV ranks models the way the leaderboard does, so trust it. Low means the public split is noisy or your CV leaks, so stop tuning against the public score. (Fewer than eight pairs is too few: with four, shuffled scores look like strong agreement one time in six.)
+
+## Changing how you compute CV
+
+The gate compares your CV with your best so far, which only makes sense if both were computed the
+same way. When you change the CV itself (more folds, a different split, a fixed leak), set a new
+`cv_scheme` in `kship.toml`:
+
+```toml
+cv_scheme = "v2"
+```
+
+Submissions are then tagged `cvs=v2` on Kaggle, and the gate, `kship log`'s best CV and the CV↔LB
+correlation only look at submissions from the same scheme. The default, `""`, matches every
+submission made before you set one.
 
 ## kship.toml
 
@@ -139,6 +161,7 @@ sample_submission = "data/sample_submission.csv"
 metric = "AUC"
 higher_is_better = true       # guessed from the metric name; check it
 min_improvement = 0           # CV must beat your best by more than this
+cv_scheme = ""                # change it when you change how CV is computed (see above)
 reserve = 1                   # daily slots `kship run` won't spend
 poll_minutes = 10
 
@@ -161,7 +184,7 @@ Heads-up: kaggle 2.2.4 and 2.2.5 import `six` without declaring it, so a clean `
 
 ```sh
 uv venv && uv pip install -e '.[test]'
-.venv/bin/pytest                       # 65 tests, about 2 seconds
+.venv/bin/pytest                       # a few seconds
 .venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
 ```
 
