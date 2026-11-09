@@ -13,6 +13,8 @@
 - `kship new` / `kship ci` warn when the workflow would install kship from a git tag that isn't on GitHub yet (bumped the version, haven't pushed the tag), since every CI run would fail to install
 - Copies of kship installed from PyPI point generated workflows at `kship==<version>`. Publishing to PyPI is set up but switched off; see "Releasing" in the README
 - This repo: tagging `v*` runs a release workflow (test, build, check the tag matches the version and the changelog, GitHub release, and PyPI through trusted publishing once switched on). `publish.sh`, the one-time first-push script, is gone. The README documents the `KSHIP_MSG` marker and that markers must be printed to stdout
+- `kship submit FILE` in a code competition is an error; it used to ignore FILE and push `kernel/`
+- Internals: `ship()` is split into `decide()` (every check, no upload; a dry run is just this) and `upload()`, with the dedupe, CV gate and quota rules as plain functions tested on their own. `cli.py` keeps the commands; shipping, running the pipeline and terminal output have their own modules. The version is set only in `src/kship/__init__.py`, and lint runs mypy
 - `submissions.jsonl` copes with git merges: `kship new` adds `submissions.jsonl merge=union` to `.gitattributes`, unresolved conflict markers get a clear message saying how to fix them (instead of a JSONDecodeError), and new records are numbered after the highest number rather than after the last line
 
 ## 0.1.1 (2026-11-08)

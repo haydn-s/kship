@@ -107,8 +107,7 @@ def counted(records: list[dict]) -> list[dict]:
 
 
 def best(records: list[dict], key: str, higher: bool) -> tuple[float, dict] | None:
-    scored = [(as_float(r.get(key)), r) for r in counted(records)]
-    scored = [(v, r) for v, r in scored if v is not None]
+    scored = [(v, r) for r in counted(records) if (v := as_float(r.get(key))) is not None]
     if not scored:
         return None
     return (max if higher else min)(scored, key=lambda t: t[0])
@@ -218,8 +217,11 @@ def cv_lb_verdict(records: list[dict]) -> str | None:
 
     Pass submissions from one cv_scheme only: CVs computed different ways don't rank together.
     """
-    pairs = [(as_float(r.get("cv")), as_float(r.get("public"))) for r in counted(records)]
-    pairs = [(c, p) for c, p in pairs if c is not None and p is not None]
+    pairs = [
+        (c, p)
+        for r in counted(records)
+        if (c := as_float(r.get("cv"))) is not None and (p := as_float(r.get("public"))) is not None
+    ]
     if len(pairs) < MIN_PAIRS:
         return None
     rho = spearman([c for c, _ in pairs], [p for _, p in pairs])

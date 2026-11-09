@@ -194,6 +194,7 @@ Heads-up: kaggle 2.2.4 and 2.2.5 import `six` without declaring it, so a clean `
 uv venv && uv pip install -e '.[test]'
 .venv/bin/pytest                       # a few seconds
 .venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
+.venv/bin/mypy                         # type-checks src/ (settings in pyproject.toml)
 ```
 
 The tests run against a fake Kaggle API, plus a check that the real `KaggleApi` still has the
@@ -207,8 +208,9 @@ and re-running it after you edit the JSON updates the live ruleset.
 
 ### Releasing
 
-1. In a pull request, bump `version` in `pyproject.toml` and `src/kship/__init__.py`, and turn
-   the changelog's "Unreleased" heading into `## <version> (<date>)`.
+1. In a pull request, bump `__version__` in `src/kship/__init__.py` (the only place it's set;
+   the package metadata reads it from there), and turn the changelog's "Unreleased" heading
+   into `## <version> (<date>)`.
 2. Once it's merged, tag `main` and push the tag: `git tag v<version> && git push origin v<version>`.
 
 The tag runs `.github/workflows/release.yml`. It tests and builds kship, fails if the tag doesn't
@@ -231,7 +233,10 @@ a git tag.
 
 | path | what's in it |
 |---|---|
-| `src/kship/cli.py` | commands, and `ship()`: validate → dedupe → gate → quota → upload → score |
+| `src/kship/cli.py` | the commands and their arguments |
+| `src/kship/ship.py` | `decide()`: validate → dedupe → gate → quota, without uploading; `upload()`: upload → ledger → score; the rules as plain `judge_*` functions |
+| `src/kship/runner.py` | running the pipeline for `kship run` and reading its `KSHIP_*` markers |
+| `src/kship/ui.py` | terminal output and notifications |
 | `src/kship/kapi.py` | thin wrapper over the official Kaggle client; credential discovery; error translation |
 | `src/kship/check.py` | submission validation against the sample |
 | `src/kship/ledger.py` | `submissions.jsonl`, reading tags back from Kaggle, CV↔LB correlation |
