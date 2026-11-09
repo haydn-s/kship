@@ -30,7 +30,7 @@ dependencies = ["kaggle>=2.2", "six"]
 test = ["pytest>=8", "pyyaml", "actionlint-py", "ruff"]
 
 [project.urls]
-# `kship ci` points generated workflows at this repository; publish.sh rewrites it.
+# `kship ci` points generated workflows at this repository (pinned to the release tag).
 Repository = "https://github.com/haydn-s/kship"
 Issues = "https://github.com/haydn-s/kship/issues"
 

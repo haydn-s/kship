@@ -36,8 +36,9 @@ FALLBACK_REPO = "https://github.com/haydn-s/kship"
 def default_source() -> str:
     """Where generated CI workflows install kship from.
 
-    KSHIP_SOURCE wins. Otherwise, if this copy was installed straight from git, reuse
-    exactly that (PEP 610 direct_url.json). Otherwise use the Repository URL in
+    KSHIP_SOURCE wins. Otherwise, if this copy came from a package index (PyPI), the same
+    version from there. If it was installed straight from git, exactly that (PEP 610
+    direct_url.json). Otherwise (a local or editable install) the Repository URL in
     pyproject.toml, pinned to this version's tag.
     """
     if env := os.environ.get("KSHIP_SOURCE"):
@@ -46,8 +47,11 @@ def default_source() -> str:
         dist = metadata.distribution("kship")
     except metadata.PackageNotFoundError:
         return f"git+{FALLBACK_REPO}@v{__version__}"
+    raw = dist.read_text("direct_url.json")
+    if raw is None:  # only installs from an index have no direct_url.json
+        return f"kship=={__version__}"
     try:
-        direct = json.loads(dist.read_text("direct_url.json") or "{}")
+        direct = json.loads(raw or "{}")
     except ValueError:
         direct = {}
     vcs = direct.get("vcs_info") or {}
@@ -61,7 +65,30 @@ def default_source() -> str:
     return f"git+{FALLBACK_REPO}@v{__version__}"
 
 
-# Tests swap this for a fake.
+def remote_has_tag(url: str, tag: str) -> bool | None:
+    """Whether a git remote has a tag; None when it can't be asked (offline, private, no git)."""
+    try:
+        r = subprocess.run(
+            ["git", "ls-remote", "--tags", "--exit-code", url, f"refs/tags/{tag}"],
+            capture_output=True,
+            timeout=15,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {0: True, 2: False}.get(r.returncode)  # 2: reachable, but no such ref
+
+
+def check_source(source: str) -> None:
+    """Warn when the workflow would install kship from a tag that isn't pushed yet, which
+    happens after bumping the version but before tagging it: every CI run would fail to install."""
+    m = re.fullmatch(r"git\+(\S+?)@(v\d[\w.+-]*)", source)
+    if m and remote_has_tag(*m.groups()) is False:
+        url, tag = m.groups()
+        warn(f"{url} has no tag {tag} yet, so CI can't install kship until you push it (or pass --source)")
+
+
+# Tests swap these for fakes.
 make_kaggle = Kaggle
 
 # -- output -------------------------------------------------------------------
@@ -373,8 +400,10 @@ def cmd_new(args) -> int:
         info_title = first[2:]
     for p in write_project(dest, args.competition, info_title, cfg.sample_submission):
         note(f"created {rel(p, dest)}")
-    wf = write_workflow(dest, args.source or default_source())
+    source = args.source or default_source()
+    wf = write_workflow(dest, source)
     note(f"created {rel(wf, dest)}")
+    check_source(source)
     print()
     print("Next:")
     print(f"  cd {rel(dest, Path.cwd())}")
@@ -401,8 +430,10 @@ def cmd_ci(args) -> int:
     existed = path.exists()
     if existed and not args.force:
         raise KshipError(f"{rel(path, Path.cwd())} already exists (use --force to overwrite)")
-    write_workflow(cfg.root, args.source or default_source(), branch=args.branch, force=True)
+    source = args.source or default_source()
+    write_workflow(cfg.root, source, branch=args.branch, force=True)
     good(f"{'rewrote' if existed else 'wrote'} {rel(path, Path.cwd())}")
+    check_source(source)
     note(
         "pull requests get a dry-run verdict as a comment; merges to "
         f"{args.branch} ship if CV beats your best on Kaggle"

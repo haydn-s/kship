@@ -26,3 +26,17 @@ def test_main_ruleset_requires_a_check_that_covers_every_job():
         # and it must wait on every other job, including ones added later.
         assert gate.get("if") == "always()"
         assert set(gate["needs"]) == set(jobs) - {matches[0]}
+
+
+def test_repo_workflows_pass_actionlint():
+    import shutil
+    import subprocess
+    import sysconfig
+
+    import pytest
+
+    exe = shutil.which("actionlint") or shutil.which("actionlint", path=sysconfig.get_path("scripts"))
+    if exe is None:
+        pytest.skip("actionlint not installed")
+    result = subprocess.run([exe], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

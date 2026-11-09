@@ -2,6 +2,7 @@ import inspect
 import json
 import sys
 import tomllib
+from pathlib import Path
 
 from conftest import SLUG, write_sub
 
@@ -654,6 +655,43 @@ def test_source_follows_repository_url_for_local_installs(monkeypatch):
     dist = FakeDist(editable, urls=["Repository, https://github.com/haydn-s/kaggle-ship.git"])
     monkeypatch.setattr(cli.metadata, "distribution", lambda name: dist)
     assert cli.default_source() == f"git+https://github.com/haydn-s/kaggle-ship@v{cli.__version__}"
+
+
+def test_source_is_the_same_version_from_pypi_for_index_installs(monkeypatch):
+    monkeypatch.delenv("KSHIP_SOURCE", raising=False)
+    monkeypatch.setattr(cli.metadata, "distribution", lambda name: FakeDist(None))  # no direct_url.json
+    assert cli.default_source() == f"kship=={cli.__version__}"
+
+
+def test_ci_warns_when_the_pinned_tag_is_not_pushed(project, api, monkeypatch, capsys):
+    asked = []
+    monkeypatch.setattr(cli, "remote_has_tag", lambda url, tag: asked.append((url, tag)) or False)
+    assert cli.main(["ci", "--source", "git+https://github.com/someone/kship@v9.9.9"]) == 0
+    assert asked == [("https://github.com/someone/kship", "v9.9.9")]
+    assert "has no tag v9.9.9 yet" in capsys.readouterr().out
+    # Branches, commits and PyPI pins aren't checked, and an unreachable remote stays quiet.
+    asked.clear()
+    for source in ("git+https://github.com/someone/kship@main", "kship==0.1.1"):
+        assert cli.main(["ci", "--force", "--source", source]) == 0
+    assert asked == []
+    monkeypatch.setattr(cli, "remote_has_tag", lambda url, tag: None)
+    assert cli.main(["ci", "--force", "--source", "git+https://x.example/k@v1.0.0"]) == 0
+    assert "has no tag" not in capsys.readouterr().out
+
+
+def test_release_workflow_publishes_only_when_switched_on():
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    jobs = yaml.safe_load((root / ".github/workflows/release.yml").read_text())["jobs"]
+    assert jobs["pypi"]["if"] == "vars.PUBLISH_TO_PYPI == 'true'"
+    assert jobs["pypi"]["permissions"] == {"id-token": "write"} and jobs["pypi"]["environment"] == "pypi"
+    assert "needs.pypi.result != 'failure'" in jobs["github-release"]["if"]  # still runs when pypi is skipped
+    for job in jobs.values():
+        for step in job["steps"]:
+            owner = step.get("uses", "actions/").split("/")[0]
+            if owner != "actions":
+                assert len(step["uses"].split("@")[1]) == 40, step["uses"]  # third-party: pinned to a commit
 
 
 def test_generated_workflow_passes_actionlint(tmp_path):
