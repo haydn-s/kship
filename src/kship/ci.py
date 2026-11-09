@@ -154,10 +154,11 @@ jobs:
       - name: Ship to Kaggle if CV improved
         if: github.event_name != 'pull_request'
         env:
+          # kship notes the subject line, or the PR title for "Merge pull request #N" commits
           NOTE: ${{{{ github.event.head_commit.message }}}}
         run: |
           set +e
-          kship run -m "${{NOTE%%$'\\n'*}}" -- {python} -m src.pipeline
+          kship run -m "$NOTE" -- {python} -m src.pipeline
           rc=$?
           # 3 = out of daily submissions (already flagged in the summary); re-run this workflow tomorrow
           [ "$rc" -eq 3 ] && exit 0

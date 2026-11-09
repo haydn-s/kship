@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uvx ruff check src tests
       - run: uvx ruff format --check src tests
-      - run: bash -n bootstrap.sh publish.sh
+      - run: bash -n bootstrap.sh publish.sh protect-main.sh
 
   test:
     runs-on: ${{ matrix.os }}
@@ -41,3 +41,19 @@ jobs:
         run: .venv/bin/python -m pytest -q
       - name: The installed CLI starts
         run: .venv/bin/kship --version && .venv/bin/kship --help > /dev/null
+
+  # The one check main's ruleset requires (.github/rulesets/main.json), so the test
+  # matrix can change without touching the ruleset. `always()` matters: a job skipped
+  # because a dependency failed counts as passing for a required check.
+  checks-passed:
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lint and every test job passed
+        env:
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "lint: $LINT, test: $TEST"
+          [ "$LINT" = success ] && [ "$TEST" = success ]

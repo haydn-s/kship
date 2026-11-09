@@ -89,7 +89,7 @@ The markers work from any language and any tool: notebooks via `jupyter nbconver
 `kship new` (or `kship ci` in an existing project) adds `.github/workflows/kship.yml`:
 
 - **pull request**: installs, downloads data (cached), runs the pipeline with `--dry-run`, and comments on the PR whether it *would* ship, with this run's CV next to your best
-- **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it
+- **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it. The submission's note is the commit's subject line, or the PR title for "Merge pull request #N" commits
 - serialized per branch, so two quick merges can't race each other for the same "best"
 
 **No shared state needed.** Every submission message is tagged, e.g.
@@ -161,13 +161,18 @@ Heads-up: kaggle 2.2.4 and 2.2.5 import `six` without declaring it, so a clean `
 
 ```sh
 uv venv && uv pip install -e '.[test]'
-.venv/bin/pytest                       # 55 tests, about 2 seconds
+.venv/bin/pytest                       # 65 tests, about 2 seconds
 .venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
 ```
 
 The tests run against a fake Kaggle API, plus a check that the real `KaggleApi` still has the
 method signatures kship calls, and an `actionlint` pass over the generated workflow. CI runs
 them on Python 3.11 to 3.14 (Linux) and 3.14 (macOS).
+
+`main` is protected by the ruleset in `.github/rulesets/main.json`: changes land through pull
+requests, the `checks-passed` job (lint plus every test job) has to pass first, and no one can
+force-push or delete `main`, admins included. `./protect-main.sh` applies it to the GitHub repo,
+and re-running it after you edit the JSON updates the live ruleset.
 
 ### Layout
 
@@ -181,7 +186,8 @@ them on Python 3.11 to 3.14 (Linux) and 3.14 (macOS).
 | `src/kship/config.py` | `kship.toml` |
 | `src/kship/scaffold.py` | files `kship new` creates |
 | `bootstrap.sh` | one-time machine setup |
-| `publish.sh` | first push of this repo to a new GitHub repository |
+| `publish.sh` | first push of this repo to a new GitHub repository, then protects `main` |
+| `protect-main.sh` | applies `main`'s ruleset (`.github/rulesets/main.json`) on GitHub |
 
 ## License
 

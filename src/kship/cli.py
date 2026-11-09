@@ -98,7 +98,8 @@ def report(res: CheckResult) -> None:
     for w in res.warnings:
         warn(w)
     if res.ok:
-        good(f"{res.path.name}: {res.rows} rows, matches the sample submission")
+        detail = "matches the sample submission" if res.against_sample else "passes the basic checks"
+        good(f"{res.path.name}: {res.rows} rows, {detail}")
 
 
 # -- helpers ------------------------------------------------------------------
@@ -131,12 +132,28 @@ def dir_digest(folder: Path) -> str:
     return h.hexdigest()
 
 
+_MERGE_LINE = re.compile(r"Merge pull request (#\d+) from \S+")
+
+
+def note_line(text: str | None) -> str:
+    """One line of note from free text or a whole commit message: its first non-empty line,
+    except that GitHub's "Merge pull request #7 from you/branch" commits give the PR title
+    (the line after it) as "<title> (#7)"."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    m = _MERGE_LINE.fullmatch(lines[0])
+    if m and len(lines) > 1:
+        return f"{lines[1]} ({m.group(1)})"
+    return lines[0]
+
+
 def build_message(note_text: str, cv: float | None, git: dict | None, digest: str, fallback: str) -> str:
     """The Kaggle submission description. The tags are machine-readable on purpose:
     kship reads them back to gate and dedupe from any machine, CI included."""
     tags = ([f"cv={cv:.5f}"] if cv is not None else []) + [f"git={ledger.git_label(git)}", f"sub={digest[:8]}"]
     tail = " · " + " · ".join(tags)
-    head = " ".join((note_text.strip() or fallback).split()).replace("=", ":")
+    head = " ".join((note_line(note_text) or fallback).split()).replace("=", ":")
     return head[: 250 - len(tail)] + tail
 
 
@@ -268,8 +285,9 @@ def init_project(root: Path, slug: str, force: bool = False) -> Config:
                 good(f"downloaded {sample_rel}")
             else:
                 warn("no sample submission among the competition files; set sample_submission yourself")
-        except Exception as e:  # 403 before rules are accepted, network, ...
-            warn(f"couldn't fetch the sample submission ({e}). Have you accepted the rules?")
+        except Exception as e:  # 403 before the rules are accepted, network, ...
+            msg = str(e) if isinstance(e, KshipError) else explain(e)
+            warn(f"couldn't fetch the sample submission ({msg}); set sample_submission in {CONFIG_NAME} yourself")
     except KshipError as e:
         warn(f"working offline: {e}".splitlines()[0])
 
@@ -543,7 +561,7 @@ def ship(
             "sub": digest[:8],
             "git": git,
             "cv": cv,
-            "note": note_text.strip(),
+            "note": note_line(note_text),
             "message": message,
             "ref": ref,
             "mode": cfg.mode,
@@ -623,6 +641,8 @@ def run_streaming(cmd: list[str], env: dict) -> tuple[int, dict]:
         if m:
             markers[m.group(1).decode().lower()] = m.group(2).decode(errors="replace")
 
+    # Piped (CI logs), stdout is block-buffered; flush so our lines come before the pipeline's.
+    sys.stdout.flush()
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, env=env)
     except FileNotFoundError:
