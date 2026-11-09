@@ -9,6 +9,10 @@
 - New `cv_scheme` setting in `kship.toml`. Change it when you change how CV is computed: submissions are tagged `cvs=<scheme>`, and the gate, the best CV in `kship log`, and the CV↔LB correlation only compare within one scheme. Before, one leaky CV could block the gate for good
 - The CV↔LB verdict needs 8 submissions with both scores, not 4. With 4, random scores look like strong agreement one time in six
 - CI workflow (regenerate with `kship ci --force`): `KAGGLE_API_TOKEN` is set only on the steps that run kship, so `make setup` doesn't see it; the PR comment comes from a separate job, the only one with `pull-requests: write`; `astral-sh/setup-uv` is pinned to a commit; the artifact holds just the judged file and the ledger, kept 30 days, instead of all of `submissions/`. kship writes two more step outputs, `file` and `summary`
+- `kship check` says when the IDs are just the sample's IDs written as floats (`1.0` vs `1`, usually pandas after a NaN or a merge), and how to fix it
+- `kship new` / `kship ci` warn when the workflow would install kship from a git tag that isn't on GitHub yet (bumped the version, haven't pushed the tag), since every CI run would fail to install
+- Copies of kship installed from PyPI point generated workflows at `kship==<version>`. Publishing to PyPI is set up but switched off; see "Releasing" in the README
+- This repo: tagging `v*` runs a release workflow (test, build, check the tag matches the version and the changelog, GitHub release, and PyPI through trusted publishing once switched on). `publish.sh`, the one-time first-push script, is gone. The README documents the `KSHIP_MSG` marker and that markers must be printed to stdout
 - `submissions.jsonl` copes with git merges: `kship new` adds `submissions.jsonl merge=union` to `.gitattributes`, unresolved conflict markers get a clear message saying how to fix them (instead of a JSONDecodeError), and new records are numbered after the highest number rather than after the last line
 
 ## 0.1.1 (2026-11-08)

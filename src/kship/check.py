@@ -53,6 +53,15 @@ def _is_number(s: str) -> bool:
         return False
 
 
+def _as_int_text(s: str) -> str | None:
+    """'12.0' -> '12'; None for anything that isn't a whole number."""
+    try:
+        x = float(s)
+    except ValueError:
+        return None
+    return str(int(x)) if math.isfinite(x) and x.is_integer() else None
+
+
 def _examples(items) -> str:
     items = list(items)
     shown = ", ".join(repr(x) for x in items[:SHOWN])
@@ -181,7 +190,14 @@ def check_submission(
         if missing:
             res.errors.append(f"{len(missing)} IDs from the sample are missing: {_examples(missing)}")
         if extra:
-            res.errors.append(f"{len(extra)} IDs aren't in the sample: {_examples(extra)}")
+            msg = f"{len(extra)} IDs aren't in the sample: {_examples(extra)}"
+            # The usual cause: pandas turned an int ID column into floats (a NaN, or a merge).
+            if missing and all(i != _as_int_text(i) and _as_int_text(i) in sample_set for i in extra):
+                msg += (
+                    f". They're the sample's IDs written as floats ({extra[0]!r} vs {_as_int_text(extra[0])!r}): "
+                    "write the ID column as integers, e.g. df[id_col] = df[id_col].astype(int)"
+                )
+            res.errors.append(msg)
         if not missing and not extra and not dupes and order != s_ids:
             res.warnings.append("rows are in a different order than the sample (usually fine, Kaggle joins on ID)")
 

@@ -48,6 +48,14 @@ def test_reordered_rows_is_only_a_warning(tmp_path):
     assert res.ok and "different order" in res.warnings[0]
 
 
+def test_float_ids_get_a_hint(tmp_path):
+    res = run(tmp_path, "id,target\n1.0,0.1\n2.0,0.9\n3.0,0.5\n")
+    assert not res.ok and "written as floats ('1.0' vs '1')" in " ".join(res.errors)
+    # Unrelated wrong IDs don't get the hint.
+    res = run(tmp_path, "id,target\n1,0.1\n2,0.9\n7.0,0.5\n")
+    assert not res.ok and "floats" not in " ".join(res.errors)
+
+
 def test_ragged_rows(tmp_path):
     res = run(tmp_path, "id,target\n1,0.1,9\n2,0.9\n3,0.5\n")
     assert not res.ok and "don't have 2 columns" in res.errors[0]

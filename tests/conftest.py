@@ -147,6 +147,7 @@ class FakeApi:
 def api(monkeypatch, tmp_path):
     fake = FakeApi()
     monkeypatch.setattr(cli, "make_kaggle", lambda: Kaggle(api=fake, sleep=lambda s: None))
+    monkeypatch.setattr(cli, "remote_has_tag", lambda url, tag: True)  # no network in tests
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KSHIP_NO_NOTIFY", "1")
     # GitHub runners set these; tests that want CI behaviour set GITHUB_ACTIONS themselves.

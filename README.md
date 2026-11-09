@@ -51,12 +51,18 @@ For an existing project, `kship init <slug>` adds just the `kship.toml`.
 
 ## Wire it into your pipeline
 
-Your pipeline writes its CSV into `submissions/` and prints two marker lines to stdout:
+Your pipeline writes its CSV into `submissions/` and prints marker lines:
 
 ```python
 print(f"KSHIP_FILE={path}")   # optional: otherwise the newest new file in submissions/ is used
 print(f"KSHIP_CV={cv:.6f}")   # your cross-validated score, used by the gate
+print("KSHIP_MSG=lightgbm + target encoding")   # optional: the note, if `-m` doesn't give one
 ```
+
+Markers have to be on **stdout**, each on a line of its own (leading and trailing spaces are
+fine). kship doesn't read stderr, which is where Python's `logging` writes by default, so
+`logging.info(f"KSHIP_CV={cv}")` won't be seen; use `print`. If a marker appears more than
+once, the last one wins. `-m` on the command line beats `KSHIP_MSG`.
 
 With no `KSHIP_CV` line there's nothing for the gate to compare, so `kship run` doesn't ship
 (it says why). Pass `--gate always` to ship anyway, e.g. for a first baseline.
@@ -199,6 +205,28 @@ requests, the `checks-passed` job (lint plus every test job) has to pass first, 
 force-push or delete `main`, admins included. `./protect-main.sh` applies it to the GitHub repo,
 and re-running it after you edit the JSON updates the live ruleset.
 
+### Releasing
+
+1. In a pull request, bump `version` in `pyproject.toml` and `src/kship/__init__.py`, and turn
+   the changelog's "Unreleased" heading into `## <version> (<date>)`.
+2. Once it's merged, tag `main` and push the tag: `git tag v<version> && git push origin v<version>`.
+
+The tag runs `.github/workflows/release.yml`. It tests and builds kship, fails if the tag doesn't
+match the built version or the changelog has no section for it, and creates the GitHub release
+with that section as its notes. Push the tag before anyone runs `kship ci` with the new version:
+generated workflows install from that tag, and `kship ci` warns when it isn't on GitHub yet.
+
+**Publishing to PyPI** is off until you set it up once:
+
+1. On pypi.org, add a "pending publisher" for project `kship`: this repository, workflow
+   `release.yml`, environment `pypi`.
+2. In this repo's settings, create the `pypi` environment, then add a repository variable
+   `PUBLISH_TO_PYPI` set to `true`.
+
+After that, each tag also publishes to PyPI through trusted publishing (no token is stored).
+Copies of kship installed from PyPI point generated workflows at `kship==<version>` instead of
+a git tag.
+
 ### Layout
 
 | path | what's in it |
@@ -211,8 +239,8 @@ and re-running it after you edit the JSON updates the live ruleset.
 | `src/kship/config.py` | `kship.toml` |
 | `src/kship/scaffold.py` | files `kship new` creates |
 | `bootstrap.sh` | one-time machine setup |
-| `publish.sh` | first push of this repo to a new GitHub repository, then protects `main` |
 | `protect-main.sh` | applies `main`'s ruleset (`.github/rulesets/main.json`) on GitHub |
+| `.github/workflows/release.yml` | on a `v*` tag: test, build, GitHub release, and PyPI once switched on |
 
 ## License
 

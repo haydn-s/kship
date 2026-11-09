@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.3
       - run: uvx ruff check src tests
       - run: uvx ruff format --check src tests
-      - run: bash -n bootstrap.sh publish.sh protect-main.sh
+      - run: bash -n bootstrap.sh protect-main.sh
 
   test:
     runs-on: ${{ matrix.os }}

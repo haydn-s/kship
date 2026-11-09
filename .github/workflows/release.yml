@@ -1,0 +1,77 @@
+# Pushing a v* tag builds kship, checks the tag matches the package version, publishes it
+# to PyPI (once that's set up, see "Releasing" in the README), and creates the GitHub release
+# with that version's notes from CHANGELOG.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Test
+        run: |
+          uv venv
+          uv pip install -e '.[test]'
+          .venv/bin/python -m pytest -q
+
+      - name: Build
+        run: uv build
+
+      - name: The tag matches the package version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ls "dist/kship-$version-py3-none-any.whl" "dist/kship-$version.tar.gz" \
+            || { echo "::error::tag $GITHUB_REF_NAME doesn't match the version in the built package"; exit 1; }
+          grep -q "^## $version " CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no '## $version' section"; exit 1; }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  # Off until the repo variable PUBLISH_TO_PYPI is "true", so tags don't fail before
+  # PyPI's trusted publisher is set up.
+  pypi:
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # trusted publishing: no PyPI token stored anywhere
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    needs: [build, pypi]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.pypi.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # this version's section of the changelog, without its heading
+          awk -v v="$version" '$0 ~ "^## " v " " {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "kship $version" --notes-file notes.md --verify-tag
