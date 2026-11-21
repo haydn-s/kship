@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `kship new <slug> <dir>` scaffolds into a folder that holds only `.git` without `--force`, so you can create the repo on GitHub, clone it, and run `kship new` in the clone. The clone's `.git` (a folder, or a file in a worktree or submodule) is left as it is. Anything else in the folder still needs `--force`, which also overwrites an existing `kship.toml`, and the error now says so
+
 ## 0.2.0 (2026-11-20)
 
 Upgrading: reinstall kship (`uv tool install --force 'git+https://github.com/haydn-s/kship@v0.2.0' --with six`, or `git pull` in an editable clone). Then in each competition repo, run `kship ci --force` to pick up the new workflow, and add `submissions.jsonl merge=union` to `.gitattributes` (`kship new` does this for new projects; `kship ci` doesn't). Two things now stop instead of going ahead: `kship run` with no CV score skips the upload (use `make force-ship` for a baseline), and `kship submit FILE` in a code competition is an error.

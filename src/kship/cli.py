@@ -267,10 +267,16 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _has_content(dest: Path) -> bool:
+    """Anything in dest besides `.git`. A fresh clone of an empty GitHub repo holds only
+    `.git/` (a `.git` file in a worktree or submodule), and that's fine to scaffold into."""
+    return any(p.name != ".git" for p in dest.iterdir())
+
+
 def cmd_new(args) -> int:
     dest = Path(args.dir or args.competition).resolve()
-    if dest.exists() and any(dest.iterdir()) and not args.force:
-        raise KshipError(f"{dest} already exists and isn't empty")
+    if dest.exists() and _has_content(dest) and not args.force:
+        raise KshipError(f"{dest} already exists and isn't empty (use --force to scaffold into it anyway)")
     dest.mkdir(parents=True, exist_ok=True)
     headline(f"new competition project: {dest}")
     if shutil.which("git") and not (dest / ".git").exists():

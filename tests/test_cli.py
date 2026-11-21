@@ -1,9 +1,12 @@
 import inspect
 import json
+import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
+import pytest
 from conftest import SLUG, write_sub
 
 from kship import cli, ledger
@@ -84,6 +87,52 @@ def test_new_scaffolds_a_project(api, tmp_path, monkeypatch):
     assert "\tkship run" in (root / "Makefile").read_text()
     assert "data/sample_submission.csv" in (root / "src/pipeline.py").read_text()
     compile((root / "src/pipeline.py").read_text(), "pipeline.py", "exec")
+
+
+@pytest.mark.parametrize("git", ["dir", "file"])
+def test_new_into_a_fresh_clone_needs_no_force(api, tmp_path, monkeypatch, git):
+    # `gh repo create NAME --private --clone` leaves just .git/ (a .git file in a worktree or submodule)
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    if git == "dir":
+        (clone / ".git").mkdir()
+    else:
+        (clone / ".git").write_text("gitdir: ../elsewhere/.git\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["new", SLUG, "clone"]) == 0
+    for f in ("kship.toml", "Makefile", "src/pipeline.py", ".github/workflows/kship.yml"):
+        assert (clone / f).exists(), f
+
+
+def test_new_still_refuses_a_folder_with_other_files(api, tmp_path, monkeypatch, capsys):
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "README.md").write_text("# mine\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["new", SLUG, "clone"]) == 1
+    assert "isn't empty" in capsys.readouterr().out
+    assert not (clone / "kship.toml").exists()
+    assert (clone / "README.md").read_text() == "# mine\n"
+
+
+def test_new_leaves_an_existing_git_repo_alone(api, tmp_path, monkeypatch):
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    calls = []
+    real_run = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: calls.append(cmd) or real_run(cmd, *a, **kw))
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["new", SLUG, "fresh"]) == 0  # control: a new folder does get `git init`
+    assert ["git", "init", "-q"] in calls and (tmp_path / "fresh" / ".git" / "HEAD").exists()
+
+    calls.clear()
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    (clone / ".git" / "config").write_text('[remote "origin"]\n\turl = git@github.com:you/comp.git\n')
+    assert cli.main(["new", SLUG, "clone"]) == 0
+    assert not [c for c in calls if c[:2] == ["git", "init"]]
+    assert [p.name for p in (clone / ".git").iterdir()] == ["config"]
 
 
 def test_doctor_without_credentials(api, capsys):
