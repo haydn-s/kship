@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-20)
+
+Upgrading: reinstall kship (`uv tool install --force 'git+https://github.com/haydn-s/kship@v0.2.0' --with six`, or `git pull` in an editable clone). Then in each competition repo, run `kship ci --force` to pick up the new workflow, and add `submissions.jsonl merge=union` to `.gitattributes` (`kship new` does this for new projects; `kship ci` doesn't). Two things now stop instead of going ahead: `kship run` with no CV score skips the upload (use `make force-ship` for a baseline), and `kship submit FILE` in a code competition is an error.
 
 - Submitting no longer marks your commit dirty (`git=a1b2c3d*`, "uncommitted changes") just because the last submission added a line to `submissions.jsonl`. The ledger and `SUBMISSIONS.md` don't count as uncommitted changes; everything else still does
 - A `sample_submission` that's set in `kship.toml` but missing on disk is now an error. Before, the header, row count and ID checks were skipped with a warning, and `kship run --dry-run` said a file with the wrong IDs "passes every check". This could happen on a CI runner, because `kship data` keeps the archive's folders (`data/for_students/sample_submission.csv`) while `kship init` saves the sample as `data/sample_submission.csv`. Now `kship data`, `kship check` and shipping copy the sample to where `kship.toml` expects it when there's exactly one file by that name under `data/`
