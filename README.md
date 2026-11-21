@@ -47,6 +47,23 @@ make setup && make data
 
 Accept the competition's rules on Kaggle first, or the API returns 403s. `kship doctor` tells you if you haven't.
 
+The CI workflow needs the project on GitHub. Either push the folder `kship new` made (after your first commit):
+
+```sh
+gh repo create <you>/<repo> --private --source . --push
+```
+
+or create the repo first, clone it, and scaffold into the clone:
+
+```sh
+gh repo create <you>/<repo> --private --clone     # or make it on github.com and `git clone` it
+kship new playground-series-s6e11 <repo>
+```
+
+A folder that holds only `.git` counts as empty, so scaffolding into a fresh clone needs no
+`--force`, and the clone's `.git` is left as it is. Anything else in the folder, such as a
+README GitHub added for you, still needs `--force`, which also overwrites an existing `kship.toml`.
+
 For an existing project, `kship init <slug>` adds just the `kship.toml`.
 
 ## Wire it into your pipeline
@@ -117,7 +134,7 @@ commit as dirty.
 One-time per competition repo:
 
 ```sh
-gh repo create <you>/<competition-slug> --private --source . --push
+gh repo create <you>/<competition-slug> --private --source . --push   # skip if you scaffolded into a clone
 gh secret set KAGGLE_API_TOKEN < ~/.kaggle/access_token   # or paste one from kaggle.com/settings/api
 ```
 
