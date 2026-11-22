@@ -125,6 +125,11 @@ CI (`.github/workflows/kship.yml`): every pull request runs the pipeline as a dr
 comments whether it would ship; merging to `main` ships it if CV beats the best submission
 on Kaggle. Needs the `KAGGLE_API_TOKEN` repo secret.
 
+After a merge, the run on `main` trains everything again. If the pipeline caches its work and
+checks that each cached file is still current, set `on_merge = "reuse"` under `[ci]` in
+`kship.toml`, and that run starts from the pull request's cache instead (see "Reusing the
+pull request's work" in kship's README).
+
 Submission history lives in `submissions.jsonl` (committed) and `SUBMISSIONS.md`.
 """
 

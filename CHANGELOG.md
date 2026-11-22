@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Upgrading: run `kship ci --force` in each competition repo to pick up the new workflow steps. Nothing changes until you set `on_merge = "reuse"`.
+
+- New `[ci] on_merge` setting in `kship.toml`. The default, `"retrain"`, is what happened before: the run on `main` after a merge trains everything again. With `"reuse"`, the pull request's run keeps the folders in `[ci] cache` as an artifact, and the run after the merge restores them before running the pipeline, so work the pull request already did isn't repeated. The pipeline has to check its cached files are still current (e.g. a key built from the code and data); see "Reusing the pull request's work" in the README
+- New `kship reuse save` / `kship reuse restore`, the two halves the workflow calls (also usable from hand-written workflows, e.g. one job per model)
+- CI workflow: the pipeline job can read the repo's Actions runs and pull requests (read-only, for `kship reuse restore`, the only step handed the token), and `actions/checkout` no longer leaves the job's token in `.git/config`
 - `kship new <slug> <dir>` scaffolds into a folder that holds only `.git` without `--force`, so you can create the repo on GitHub, clone it, and run `kship new` in the clone. The clone's `.git` (a folder, or a file in a worktree or submodule) is left as it is. Anything else in the folder still needs `--force`, which also overwrites an existing `kship.toml`, and the error now says so
 
 ## 0.2.0 (2026-11-20)

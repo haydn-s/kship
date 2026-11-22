@@ -87,6 +87,9 @@ def test_new_scaffolds_a_project(api, tmp_path, monkeypatch):
     assert "\tkship run" in (root / "Makefile").read_text()
     assert "data/sample_submission.csv" in (root / "src/pipeline.py").read_text()
     compile((root / "src/pipeline.py").read_text(), "pipeline.py", "exec")
+    # merges retrain unless the project opts in, and its README says how
+    assert 'on_merge = "retrain"' in (root / "kship.toml").read_text()
+    assert 'on_merge = "reuse"' in (root / "README.md").read_text()
 
 
 @pytest.mark.parametrize("git", ["dir", "file"])
@@ -632,7 +635,9 @@ def test_workflow_keeps_the_token_and_pr_write_access_narrow(project, api):
     doc = yaml.safe_load((project / ".github/workflows/kship.yml").read_text())
     assert "KAGGLE_API_TOKEN" not in doc["env"] and doc["permissions"] == {"contents": "read"}
     pipeline_job, comment = doc["jobs"]["pipeline"], doc["jobs"]["comment"]
-    assert "permissions" not in pipeline_job and comment["permissions"] == {"pull-requests": "write"}
+    # the pipeline job only reads (the extras are for on_merge = "reuse"); the comment job alone writes
+    assert all(v == "read" for v in pipeline_job["permissions"].values())
+    assert comment["permissions"] == {"pull-requests": "write"}
     steps = {s.get("name") or s["uses"]: s for s in pipeline_job["steps"]}
     with_token = {n for n, s in steps.items() if "KAGGLE_API_TOKEN" in (s.get("env") or {})}
     assert with_token == {

@@ -107,6 +107,7 @@ The markers work from any language and any tool: notebooks via `jupyter nbconver
 | `kship submit [file] [-m] [--cv]` | validate, dedupe, upload now (no CV gate, no reserve) |
 | `kship run [-m] [--cv] -- <cmd>` | run a pipeline, then ship its output if it improved |
 | `kship log [--refresh] [--md]` | history with scores, best runs, CV↔leaderboard rank agreement |
+| `kship reuse save\|restore` | used by the workflow with `on_merge = "reuse"` (see [below](#reusing-the-pull-requests-work)) |
 
 `--dry-run` runs every check without uploading. `--no-wait` skips the score polling.
 
@@ -115,7 +116,7 @@ The markers work from any language and any tool: notebooks via `jupyter nbconver
 `kship new` (or `kship ci` in an existing project) adds `.github/workflows/kship.yml`:
 
 - **pull request**: installs, downloads data (cached), runs the pipeline with `--dry-run`, and comments on the PR whether it *would* ship, with this run's CV next to your best
-- **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it. The submission's note is the commit's subject line, or the PR title for "Merge pull request #N" commits
+- **merge to main**: runs the pipeline again and ships it if the CV beats your best. The job summary shows the decision, CV, and the public score once Kaggle returns it. The submission's note is the commit's subject line, or the PR title for "Merge pull request #N" commits. By default this retrains everything; a slow pipeline can [reuse the pull request's work](#reusing-the-pull-requests-work) instead
 - serialized per branch, so two quick merges can't race each other for the same "best". GitHub keeps only the newest waiting run, so with three quick merges the middle one is cancelled; the newest run includes its commit
 - `KAGGLE_API_TOKEN` reaches only the steps that run kship, not `make setup` (installing dependencies). The PR comment is posted by a separate job, the only one that can write to the PR
 - each run keeps the file kship judged and `submissions.jsonl` as an artifact for 30 days
@@ -146,6 +147,76 @@ uses this repo's `Repository` URL from `pyproject.toml`, pinned to the release t
 The pipeline runs on a standard GitHub runner (2–4 CPUs, no GPU, 120-minute limit set in the
 workflow). For heavier training, point `runs-on` at a self-hosted runner, or use a code
 competition's notebook mode so the training happens on Kaggle.
+
+### Reusing the pull request's work
+
+By default the run after a merge trains everything again, so a pipeline that takes 40 minutes
+on the pull request takes another 40 before the submission reaches Kaggle. If your pipeline
+caches its work (per-model predictions, say), the run on main can start from the pull
+request's cache instead:
+
+```toml
+[ci]
+on_merge = "reuse"     # default "retrain"
+cache = ["cache"]      # folders (or files) your pipeline caches its work in
+```
+
+That's the whole switch, and setting it back to `"retrain"` turns it off. The workflow then
+does two extra things:
+
+- **pull request**: after the dry run, `kship reuse save` packs `cache` into an artifact named
+  `kship-reuse`, kept for 7 days
+- **merge to main**: before the pipeline runs, `kship reuse restore` finds the pull request the
+  merge commit came from (merge, squash or rebase), downloads what its last run kept, and
+  restores it. The pipeline then runs as usual, and the CV gate, dedupe and quota checks
+  are unchanged
+
+**Your pipeline has to check that each cached file is still current**, and redo the ones that
+aren't. What ships has to match `main`, and `main` isn't always what the pull request's run
+tested: another pull request may have merged in between, changing the data, the folds, or
+one of the models. The usual way is to store a key in each cache file, built from the code
+and data that made it, and retrain when the key doesn't match:
+
+```python
+# what the predictions depend on: the model's code, the shared CV code, and the data
+key = sha256(read_bytes("src/models/lgbm.py") + read_bytes("src/cv.py") + data_digest).hexdigest()
+path = Path("cache/lgbm.npz")
+if path.exists() and str(np.load(path)["key"]) == key:
+    oof, test = np.load(path)["oof"], np.load(path)["test"]  # current: reuse it
+else:
+    oof, test = train_lgbm()
+    np.savez(path, key=key, oof=oof, test=test)
+```
+
+A pipeline that loads whatever is in `cache/` without such a check would ship the pull
+request's predictions even when `main` has changed since, so leave `on_merge` on `"retrain"`
+for that one.
+
+What kship takes care of:
+
+- it only restores files inside the `cache` paths that `main`'s own `kship.toml` names, and
+  never replaces a file that's in the commit
+- the job summary says whether `main` is exactly what the pull request's run tested, or has
+  changes that run didn't see
+- when there's nothing to reuse, the pipeline just starts from scratch: a direct push to
+  `main`, a pull request whose last run failed or didn't finish, one merged more than 7 days
+  after its last run, or one whose run happened before you turned `on_merge` on
+
+The artifacts count toward your account's Actions storage (500 MB for private repos on
+GitHub Free). If an upload fails, the pull request still passes and the merge retrains.
+
+To do this, the pipeline job can read the repo's Actions runs and pull requests (read-only).
+Only the restore step is handed the token: `actions/checkout` doesn't leave it in
+`.git/config`, so your pipeline's code doesn't see it.
+
+The workflow's steps follow `kship.toml` at run time. Repos set up with kship 0.2.0 or earlier
+need `kship ci --force` once to get them.
+
+Hand-written workflows can use the same two commands, e.g. with one job per model:
+`kship reuse save "$RUNNER_TEMP/lgbm.tar.gz" cache/lgbm.npz`, uploaded as an artifact named
+`kship-reuse-lgbm`, and `kship reuse restore --name kship-reuse-lgbm` in that model's job on
+`main`. The restore step needs `GH_TOKEN: ${{ github.token }}`, and the job needs
+`actions: read` and `pull-requests: read`.
 
 ### Exit codes
 
@@ -197,6 +268,10 @@ range = [0, 1]                # optional
 kernel_dir = "kernel"
 output_file = "submission.csv"
 timeout_minutes = 120
+
+[ci]
+on_merge = "retrain"          # "reuse": start main's run from the PR's cache (see above)
+cache = ["cache"]
 ```
 
 ## Credentials
@@ -258,6 +333,7 @@ a git tag.
 | `src/kship/check.py` | submission validation against the sample |
 | `src/kship/ledger.py` | `submissions.jsonl`, reading tags back from Kaggle, CV↔LB correlation |
 | `src/kship/ci.py` | GitHub Actions outputs, job summary, the workflow template |
+| `src/kship/reuse.py` | `on_merge = "reuse"`: packing `[ci] cache` on pull requests, restoring it on `main` |
 | `src/kship/config.py` | `kship.toml` |
 | `src/kship/scaffold.py` | files `kship new` creates |
 | `bootstrap.sh` | one-time machine setup |
