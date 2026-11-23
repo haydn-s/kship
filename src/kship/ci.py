@@ -89,6 +89,19 @@ def emit(o: Outcome) -> None:
     print(f"::{level} title=kship::{text}")
 
 
+def set_outputs(**values: str) -> None:
+    """Step outputs for later steps (`steps.<id>.outputs.<name>`); a no-op outside Actions."""
+    if in_actions() and (path := os.environ.get("GITHUB_OUTPUT")):
+        with open(path, "a") as f:
+            f.writelines(f"{k}={v}\n" for k, v in values.items())
+
+
+def add_summary(md: str) -> None:
+    if in_actions() and (path := os.environ.get("GITHUB_STEP_SUMMARY")):
+        with open(path, "a") as f:
+            f.write(md.rstrip("\n") + "\n\n")
+
+
 # Third-party actions are pinned to a commit, so a moved tag can't change what runs next to
 # your Kaggle token. GitHub's own actions (actions/*) stay on version tags.
 SETUP_UV = "astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3"
@@ -100,6 +113,11 @@ WORKFLOW = """\
 # Needs one repo secret: KAGGLE_API_TOKEN (a KGAT_... token from kaggle.com/settings/api).
 # Only the steps that run kship get it: installing your dependencies doesn't, and neither does
 # the job that writes the PR comment.
+#
+# By default the run on main trains everything again. With on_merge = "reuse" under [ci] in
+# kship.toml, it first restores the folders in [ci] cache from the pull request's own run, so
+# your pipeline can skip the work that run already did (see kship's README for what your
+# pipeline has to check). Switching it on or off is just that line; this file stays the same.
 name: kship
 
 on:
@@ -125,10 +143,19 @@ jobs:
   pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # Read-only extras for on_merge = "reuse": finding the pull request a merge came from, and
+    # downloading what its run kept. Only the step that does that is handed the token.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
       summary: ${{{{ steps.preview.outputs.summary }}}}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # nothing here pushes, so the job's token isn't left in .git/config for your pipeline
+          persist-credentials: false
 
       - uses: {setup_uv}
 
@@ -161,6 +188,32 @@ jobs:
         env:
           KAGGLE_API_TOKEN: ${{{{ secrets.KAGGLE_API_TOKEN }}}}
         run: kship run --dry-run -- {python} -m src.pipeline
+
+      # on_merge = "reuse": keep [ci] cache for the run after the merge (a no-op otherwise)
+      - name: Pack the pipeline's cache for the merge
+        id: pack
+        if: github.event_name == 'pull_request'
+        run: kship reuse save "$RUNNER_TEMP/kship-reuse.tar.gz"
+
+      - name: Keep the pipeline's cache for the merge
+        if: steps.pack.outputs.saved == 'true'
+        # e.g. out of artifact storage: the merge then trains from scratch, which is all it costs
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: kship-reuse
+          path: ${{{{ runner.temp }}}}/kship-reuse.tar.gz
+          # a pull request merged longer than this after its last run trains from scratch
+          retention-days: 7
+          compression-level: 0  # already gzipped
+          overwrite: true       # re-running the job replaces it
+
+      # on_merge = "reuse": restore what the merged pull request's run kept (a no-op otherwise)
+      - name: Start from the pull request's cache
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{{{ github.token }}}}
+        run: kship reuse restore
 
       - name: Ship to Kaggle if CV improved
         id: ship

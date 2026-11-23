@@ -13,9 +13,9 @@ import time
 from importlib import metadata
 from pathlib import Path
 
-from kship import KshipError, __version__, ledger
+from kship import KshipError, __version__, ledger, reuse
 from kship.check import check_submission
-from kship.ci import EXIT_FAILED, Outcome, emit, in_actions, write_workflow
+from kship.ci import EXIT_FAILED, Outcome, add_summary, emit, in_actions, set_outputs, write_workflow
 from kship.config import (
     CONFIG_NAME,
     MARKDOWN_NAME,
@@ -322,9 +322,58 @@ def cmd_ci(args) -> int:
         "pull requests get a dry-run verdict as a comment; merges to "
         f"{args.branch} ship if CV beats your best on Kaggle"
     )
+    if cfg.on_merge == "reuse":
+        note(f'merges start from the pull request\'s {", ".join(cfg.cache)} ([ci] on_merge = "reuse")')
     if not (cfg.root / "Makefile").exists():
         warn("the workflow calls `make setup` and `src.pipeline`; adjust those two lines to fit this project")
     _secret_help(cfg.root)
+    return 0
+
+
+def cmd_reuse(args) -> int:
+    """The workflow's two halves of on_merge = "reuse": `save` on pull requests, `restore` on main."""
+    cfg = load()
+    flag = "saved" if args.action == "save" else "restored"
+    if cfg.on_merge != "reuse":
+        note(
+            f'on_merge = "{cfg.on_merge}" in {CONFIG_NAME}, so '
+            + ("there's nothing to keep for the merge" if flag == "saved" else "the pipeline starts from scratch")
+        )
+        set_outputs(**{flag: "false"})
+        return 0
+
+    if args.action == "save":
+        out = Path(args.file).resolve()
+        n = reuse.save(cfg, out, args.paths)
+        if n:
+            good(f"packed {n} file(s) from {', '.join(args.paths or cfg.cache)} into {rel(out, Path.cwd())}")
+        else:
+            note(f"nothing in {', '.join(args.paths or cfg.cache)} to keep: the merge will start from scratch")
+        set_outputs(saved=str(n > 0).lower())
+        return 0
+
+    result = reuse.restore(cfg, args.name)
+    if isinstance(result, str):
+        note(f"not reusing anything: {result}. The pipeline starts from scratch")
+        set_outputs(restored="false")
+        return 0
+    if result.same_tree is False:
+        tested = (
+            "main also has changes that run didn't test (another merge?), "
+            "so your pipeline has to redo whatever they affect"
+        )
+    elif result.same_tree:
+        tested = "main is exactly what that run tested"
+    else:
+        tested = "couldn't tell whether main is exactly what that run tested"
+    good(f"restored {len(result.files)} file(s) from pull request #{result.pr}'s run ({result.run_url}); {tested}")
+    for f in result.skipped:
+        warn(f"left {f} alone: it's in the commit, and restored files never replace committed ones")
+    add_summary(
+        f"Started from pull request #{result.pr}'s cache: {len(result.files)} file(s) from "
+        f"[its run]({result.run_url}); {tested}."
+    )
+    set_outputs(restored="true")
     return 0
 
 
@@ -520,6 +569,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--source", default=None, help="where CI installs kship from (default: this repo, see README)")
     s.add_argument("--force", action="store_true", help="overwrite an existing workflow")
     s.set_defaults(func=cmd_ci)
+
+    s = sub.add_parser(
+        "reuse",
+        help="CI, with on_merge = \"reuse\": carry the pipeline's cache from a pull request's run to main's",
+    )
+    acts = s.add_subparsers(dest="action", required=True, metavar="<save|restore>")
+    a = acts.add_parser("save", help="pull request run: pack [ci] cache into an archive for the workflow to upload")
+    a.add_argument("file", help="the .tar.gz to write")
+    a.add_argument("paths", nargs="*", help="pack only these (inside [ci] cache), e.g. one model's file")
+    a.set_defaults(func=cmd_reuse)
+    a = acts.add_parser("restore", help="run on main: restore what the merged pull request's run packed")
+    a.add_argument("--name", default=reuse.ARTIFACT, help=f"the artifact to restore (default: {reuse.ARTIFACT})")
+    a.set_defaults(func=cmd_reuse)
 
     s = sub.add_parser("data", help="download all competition files into data/")
     s.set_defaults(func=cmd_data)
